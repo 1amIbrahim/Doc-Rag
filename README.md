@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <div align="center">
 
 # kotaemon
@@ -398,3 +399,7 @@ Since our project is actively being developed, we greatly value your feedback an
 <a href="https://github.com/Cinnamon/kotaemon/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Cinnamon/kotaemon" />
 </a>
+
+# Doc-Rag
+Document t Retrieval-Augmented Generation (Doc RAG) System
+>>>>>>> 78d25eedaa3de2a94e7aa92f681604f70968d33e
