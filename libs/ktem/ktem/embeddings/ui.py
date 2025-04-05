@@ -1,12 +1,9 @@
-from copy import deepcopy
-
-import gradio as gr
+import streamlit as st
 import pandas as pd
 import yaml
-from ktem.app import BasePage
-from ktem.utils.file import YAMLNoDateSafeLoader
+from copy import deepcopy
 from theflow.utils.modules import deserialize
-
+from ktem.utils.file import YAMLNoDateSafeLoader
 from .manager import embedding_models_manager
 
 
@@ -20,374 +17,158 @@ def format_description(cls):
     return f"{cls.__doc__}\n\n" + "\n".join(params_lines)
 
 
-class EmbeddingManagement(BasePage):
-    def __init__(self, app):
-        self._app = app
+class EmbeddingManagement:
+    def __init__(self,app):
         self.spec_desc_default = (
             "# Spec description\n\nSelect a model to view the spec description."
         )
+        self.selected_emb_name = ""
+        self.emb_list = None
+        self.emb_choices = None
+        self._selected_panel = None
+        self._check_connection_panel = None
+        self._selected_panel_btn = None
         self.on_building_ui()
 
     def on_building_ui(self):
-        with gr.Tab(label="View"):
-            self.emb_list = gr.DataFrame(
-                headers=["name", "vendor", "default"],
-                interactive=False,
-            )
+        st.sidebar.title("Embedding Management")
+        tab = st.sidebar.radio("Choose tab", ["View", "Add"])
 
-            with gr.Column(visible=False) as self._selected_panel:
-                self.selected_emb_name = gr.Textbox(value="", visible=False)
-                with gr.Row():
-                    with gr.Column():
-                        self.edit_default = gr.Checkbox(
-                            label="Set default",
-                            info=(
-                                "Set this Embedding model as default. This default "
-                                "Embedding will be used by other components by default "
-                                "if no Embedding is specified for such components."
-                            ),
-                        )
-                        self.edit_spec = gr.Textbox(
-                            label="Specification",
-                            info="Specification of the Embedding model in YAML format",
-                            lines=10,
-                        )
+        if tab == "View":
+            self.view_embeddings_tab()
+        elif tab == "Add":
+            self.add_embedding_tab()
 
-                        with gr.Accordion(
-                            label="Test connection", visible=False, open=False
-                        ) as self._check_connection_panel:
-                            with gr.Row():
-                                with gr.Column(scale=4):
-                                    self.connection_logs = gr.HTML(
-                                        "Logs",
-                                    )
+    def view_embeddings_tab(self):
+        self.emb_list = self.list_embeddings()
+        if not self.emb_list.empty:
+            st.write(self.emb_list)
+        else:
+            st.write("No embeddings available. Please add one.")
 
-                                with gr.Column(scale=1):
-                                    self.btn_test_connection = gr.Button("Test")
+        if self.selected_emb_name:
+            self.show_selected_embedding_details()
+        else:
+            st.write("No embedding selected.")
 
-                        with gr.Row(visible=False) as self._selected_panel_btn:
-                            with gr.Column():
-                                self.btn_edit_save = gr.Button(
-                                    "Save", min_width=10, variant="primary"
-                                )
-                            with gr.Column():
-                                self.btn_delete = gr.Button(
-                                    "Delete", min_width=10, variant="stop"
-                                )
-                                with gr.Row():
-                                    self.btn_delete_yes = gr.Button(
-                                        "Confirm Delete",
-                                        variant="stop",
-                                        visible=False,
-                                        min_width=10,
-                                    )
-                                    self.btn_delete_no = gr.Button(
-                                        "Cancel", visible=False, min_width=10
-                                    )
-                            with gr.Column():
-                                self.btn_close = gr.Button("Close", min_width=10)
+    def add_embedding_tab(self):
+        self.name = st.text_input("Name", help="Must be unique and non-empty.")
+        self.emb_choices = st.selectbox("Vendors", options=list(embedding_models_manager.vendors().keys()))
+        self.spec = st.text_area("Specification", help="Specification of the Embedding model in YAML format.")
+        self.default = st.checkbox("Set default", help="Set this Embedding model as default.")
 
-                    with gr.Column():
-                        self.edit_spec_desc = gr.Markdown("# Spec description")
+        if st.button("Add"):
+            self.create_emb(self.name, self.emb_choices, self.spec, self.default)
 
-        with gr.Tab(label="Add"):
-            with gr.Row():
-                with gr.Column(scale=2):
-                    self.name = gr.Textbox(
-                        label="Name",
-                        info=(
-                            "Must be unique and non-empty. "
-                            "The name will be used to identify the embedding model."
-                        ),
-                    )
-                    self.emb_choices = gr.Dropdown(
-                        label="Vendors",
-                        info=(
-                            "Choose the vendor of the Embedding model. Each vendor "
-                            "has different specification."
-                        ),
-                    )
-                    self.spec = gr.Textbox(
-                        label="Specification",
-                        info="Specification of the Embedding model in YAML format.",
-                    )
-                    self.default = gr.Checkbox(
-                        label="Set default",
-                        info=(
-                            "Set this Embedding model as default. This default "
-                            "Embedding will be used by other components by default "
-                            "if no Embedding is specified for such components."
-                        ),
-                    )
-                    self.btn_new = gr.Button("Add", variant="primary")
-
-                with gr.Column(scale=3):
-                    self.spec_desc = gr.Markdown(self.spec_desc_default)
-
-    def _on_app_created(self):
-        """Called when the app is created"""
-        self._app.app.load(
-            self.list_embeddings,
-            inputs=[],
-            outputs=[self.emb_list],
-        )
-        self._app.app.load(
-            lambda: gr.update(choices=list(embedding_models_manager.vendors().keys())),
-            outputs=[self.emb_choices],
-        )
-
-    def on_emb_vendor_change(self, vendor):
-        vendor = embedding_models_manager.vendors()[vendor]
-
-        required: dict = {}
-        desc = vendor.describe()
-        for key, value in desc["params"].items():
-            if value.get("required", False):
-                required[key] = value.get("default", None)
-
-        return yaml.dump(required), format_description(vendor)
-
-    def on_register_events(self):
-        self.emb_choices.select(
-            self.on_emb_vendor_change,
-            inputs=[self.emb_choices],
-            outputs=[self.spec, self.spec_desc],
-        )
-        self.btn_new.click(
-            self.create_emb,
-            inputs=[self.name, self.emb_choices, self.spec, self.default],
-            outputs=None,
-        ).success(self.list_embeddings, inputs=[], outputs=[self.emb_list]).success(
-            lambda: ("", None, "", False, self.spec_desc_default),
-            outputs=[
-                self.name,
-                self.emb_choices,
-                self.spec,
-                self.default,
-                self.spec_desc,
-            ],
-        )
-        self.emb_list.select(
-            self.select_emb,
-            inputs=self.emb_list,
-            outputs=[self.selected_emb_name],
-            show_progress="hidden",
-        )
-        self.selected_emb_name.change(
-            self.on_selected_emb_change,
-            inputs=[self.selected_emb_name],
-            outputs=[
-                self._selected_panel,
-                self._selected_panel_btn,
-                # delete section
-                self.btn_delete,
-                self.btn_delete_yes,
-                self.btn_delete_no,
-                # edit section
-                self.edit_spec,
-                self.edit_spec_desc,
-                self.edit_default,
-                self._check_connection_panel,
-            ],
-            show_progress="hidden",
-        ).success(lambda: gr.update(value=""), outputs=[self.connection_logs])
-
-        self.btn_delete.click(
-            self.on_btn_delete_click,
-            inputs=[],
-            outputs=[self.btn_delete, self.btn_delete_yes, self.btn_delete_no],
-            show_progress="hidden",
-        )
-        self.btn_delete_yes.click(
-            self.delete_emb,
-            inputs=[self.selected_emb_name],
-            outputs=[self.selected_emb_name],
-            show_progress="hidden",
-        ).then(
-            self.list_embeddings,
-            inputs=[],
-            outputs=[self.emb_list],
-        )
-        self.btn_delete_no.click(
-            lambda: (
-                gr.update(visible=True),
-                gr.update(visible=False),
-                gr.update(visible=False),
-            ),
-            inputs=[],
-            outputs=[self.btn_delete, self.btn_delete_yes, self.btn_delete_no],
-            show_progress="hidden",
-        )
-        self.btn_edit_save.click(
-            self.save_emb,
-            inputs=[
-                self.selected_emb_name,
-                self.edit_default,
-                self.edit_spec,
-            ],
-            show_progress="hidden",
-        ).then(
-            self.list_embeddings,
-            inputs=[],
-            outputs=[self.emb_list],
-        )
-        self.btn_close.click(
-            lambda: "",
-            outputs=[self.selected_emb_name],
-        )
-
-        self.btn_test_connection.click(
-            self.check_connection,
-            inputs=[self.selected_emb_name, self.edit_spec],
-            outputs=[self.connection_logs],
-        )
+        st.markdown(self.spec_desc_default)
 
     def create_emb(self, name, choices, spec, default):
         try:
             spec = yaml.load(spec, Loader=YAMLNoDateSafeLoader)
             spec["__type__"] = (
                 embedding_models_manager.vendors()[choices].__module__
-                + "."
-                + embedding_models_manager.vendors()[choices].__qualname__
+                + "." + embedding_models_manager.vendors()[choices].__qualname__
             )
 
             embedding_models_manager.add(name, spec=spec, default=default)
-            gr.Info(f'Create Embedding model "{name}" successfully')
+            st.success(f'Created Embedding model "{name}" successfully.')
         except Exception as e:
-            raise gr.Error(f"Failed to create Embedding model {name}: {e}")
+            st.error(f"Failed to create Embedding model {name}: {e}")
 
     def list_embeddings(self):
         """List the Embedding models"""
         items = []
         for item in embedding_models_manager.info().values():
-            record = {}
-            record["name"] = item["name"]
-            record["vendor"] = item["spec"].get("__type__", "-").split(".")[-1]
-            record["default"] = item["default"]
+            record = {
+                "name": item["name"],
+                "vendor": item["spec"].get("__type__", "-").split(".")[-1],
+                "default": item["default"]
+            }
             items.append(record)
 
         if items:
-            emb_list = pd.DataFrame.from_records(items)
+            return pd.DataFrame.from_records(items)
         else:
-            emb_list = pd.DataFrame.from_records(
-                [{"name": "-", "vendor": "-", "default": "-"}]
-            )
+            return pd.DataFrame.from_records([{"name": "-", "vendor": "-", "default": "-"}])
 
-        return emb_list
-
-    def select_emb(self, emb_list, ev: gr.SelectData):
-        if ev.value == "-" and ev.index[0] == 0:
-            gr.Info("No embedding model is loaded. Please add first")
+    def select_emb(self, emb_list, ev):
+        if ev == "-" and ev.index[0] == 0:
+            st.info("No embedding model is loaded. Please add first")
             return ""
 
-        if not ev.selected:
+        if not ev:
             return ""
 
         return emb_list["name"][ev.index[0]]
 
     def on_selected_emb_change(self, selected_emb_name):
         if selected_emb_name == "":
-            _check_connection_panel = gr.update(visible=False)
-            _selected_panel = gr.update(visible=False)
-            _selected_panel_btn = gr.update(visible=False)
-            btn_delete = gr.update(visible=True)
-            btn_delete_yes = gr.update(visible=False)
-            btn_delete_no = gr.update(visible=False)
-            edit_spec = gr.update(value="")
-            edit_spec_desc = gr.update(value="")
-            edit_default = gr.update(value=False)
-        else:
-            _check_connection_panel = gr.update(visible=True)
-            _selected_panel = gr.update(visible=True)
-            _selected_panel_btn = gr.update(visible=True)
-            btn_delete = gr.update(visible=True)
-            btn_delete_yes = gr.update(visible=False)
-            btn_delete_no = gr.update(visible=False)
+            return "", "", "", "", "", "", "", False
 
-            info = deepcopy(embedding_models_manager.info()[selected_emb_name])
-            vendor_str = info["spec"].pop("__type__", "-").split(".")[-1]
-            vendor = embedding_models_manager.vendors()[vendor_str]
+        info = deepcopy(embedding_models_manager.info()[selected_emb_name])
+        vendor_str = info["spec"].pop("__type__", "-").split(".")[-1]
+        vendor = embedding_models_manager.vendors()[vendor_str]
 
-            edit_spec = yaml.dump(info["spec"])
-            edit_spec_desc = format_description(vendor)
-            edit_default = info["default"]
+        edit_spec = yaml.dump(info["spec"])
+        edit_spec_desc = format_description(vendor)
+        edit_default = info["default"]
 
-        return (
-            _selected_panel,
-            _selected_panel_btn,
-            btn_delete,
-            btn_delete_yes,
-            btn_delete_no,
-            edit_spec,
-            edit_spec_desc,
-            edit_default,
-            _check_connection_panel,
-        )
+        return edit_spec, edit_spec_desc, edit_default
 
-    def on_btn_delete_click(self):
-        btn_delete = gr.update(visible=False)
-        btn_delete_yes = gr.update(visible=True)
-        btn_delete_no = gr.update(visible=True)
+    def show_selected_embedding_details(self):
+        spec, spec_desc, default = self.on_selected_emb_change(self.selected_emb_name)
 
-        return btn_delete, btn_delete_yes, btn_delete_no
+        with st.expander("Edit Embedding Model"):
+            st.text_area("Specification", value=spec, height=300)
+            st.markdown(spec_desc)
+            st.checkbox("Set as Default", value=default)
+
+        st.button("Save", on_click=self.save_emb, args=(self.selected_emb_name, default, spec))
+        st.button("Delete", on_click=self.delete_emb, args=(self.selected_emb_name,))
+
+    def save_emb(self, selected_emb_name, default, spec):
+        try:
+            spec = yaml.load(spec, Loader=YAMLNoDateSafeLoader)
+            spec["__type__"] = embedding_models_manager.info()[selected_emb_name]["spec"]["__type__"]
+            embedding_models_manager.update(selected_emb_name, spec=spec, default=default)
+            st.success(f'Saved Embedding model "{selected_emb_name}" successfully.')
+        except Exception as e:
+            st.error(f'Failed to save Embedding model "{selected_emb_name}": {e}')
+
+    def delete_emb(self, selected_emb_name):
+        try:
+            embedding_models_manager.delete(selected_emb_name)
+            st.success(f'Deleted Embedding model "{selected_emb_name}" successfully.')
+        except Exception as e:
+            st.error(f'Failed to delete Embedding model "{selected_emb_name}": {e}')
 
     def check_connection(self, selected_emb_name, selected_spec):
-        log_content: str = ""
+        log_content = ""
         try:
-            log_content += f"- Testing model: {selected_emb_name}<br>"
-            yield log_content
+            log_content += f"- Testing model: {selected_emb_name}\n"
 
-            # Parse content & init model
             info = deepcopy(embedding_models_manager.info()[selected_emb_name])
 
-            # Parse content & create dummy embedding
             spec = yaml.load(selected_spec, Loader=YAMLNoDateSafeLoader)
             info["spec"].update(spec)
 
             emb = deserialize(info["spec"], safe=False)
 
             if emb is None:
-                raise Exception(f"Can not found model: {selected_emb_name}")
+                raise Exception(f"Cannot find model: {selected_emb_name}")
 
-            log_content += "- Sending a message `Hi`<br>"
-            yield log_content
+            log_content += "- Sending a message `Hi`\n"
             _ = emb("Hi")
 
-            log_content += (
-                "<mark style='background: green; color: white'>- Connection success. "
-                "</mark><br>"
-            )
-            yield log_content
-
-            gr.Info(f"Embedding {selected_emb_name} connect successfully")
+            log_content += "Connection success.\n"
+            st.success("Connection successful")
         except Exception as e:
-            print(e)
-            log_content += (
-                f"<mark style='color: yellow; background: red'>- Connection failed. "
-                f"Got error:\n {str(e)}</mark>"
-            )
-            yield log_content
+            log_content += f"Connection failed. Error: {e}\n"
+            st.error(f"Connection failed: {e}")
 
-        return log_content
+        st.text_area("Connection Logs", log_content, height=300)
 
-    def save_emb(self, selected_emb_name, default, spec):
-        try:
-            spec = yaml.load(spec, Loader=YAMLNoDateSafeLoader)
-            spec["__type__"] = embedding_models_manager.info()[selected_emb_name][
-                "spec"
-            ]["__type__"]
-            embedding_models_manager.update(
-                selected_emb_name, spec=spec, default=default
-            )
-            gr.Info(f'Save Embedding model "{selected_emb_name}" successfully')
-        except Exception as e:
-            gr.Error(f'Failed to save Embedding model "{selected_emb_name}": {e}')
 
-    def delete_emb(self, selected_emb_name):
-        try:
-            embedding_models_manager.delete(selected_emb_name)
-        except Exception as e:
-            gr.Error(f'Failed to delete Embedding model "{selected_emb_name}": {e}')
-            return selected_emb_name
-
-        return ""
+if __name__ == "__main__":
+    app = EmbeddingManagement()
+    app.on_building_ui()

@@ -1,64 +1,42 @@
-import gradio as gr
-from ktem.app import BasePage
+import streamlit as st
+from sqlmodel import Session, select
 from ktem.db.models import User, engine
-from ktem.embeddings.ui import EmbeddingManagement
+
 from ktem.index.ui import IndexManagement
 from ktem.llms.ui import LLMManagement
+from ktem.embeddings.ui import EmbeddingManagement
 from ktem.rerankings.ui import RerankingManagement
-from sqlmodel import Session, select
-
 from .user import UserManagement
 
 
-class ResourcesTab(BasePage):
+class ResourcesTab:
     def __init__(self, app):
         self._app = app
-        self.on_building_ui()
+        self.render()
 
-    def on_building_ui(self):
-        with gr.Tab("Index Collections") as self.index_management_tab:
-            self.index_management = IndexManagement(self._app)
+    def render(self):
+        st.subheader("Resources")
 
-        with gr.Tab("LLMs") as self.llm_management_tab:
-            self.llm_management = LLMManagement(self._app)
+        tab_options = ["Index Collections", "LLMs", "Embeddings", "Rerankings"]
+        if self._app.f_user_management and st.session_state.get("is_admin"):
+            tab_options.append("Users")
 
-        with gr.Tab("Embeddings") as self.emb_management_tab:
-            self.emb_management = EmbeddingManagement(self._app)
+        selected_tab = st.selectbox("Select Resource Tab", tab_options)
 
-        with gr.Tab("Rerankings") as self.rerank_management_tab:
-            self.rerank_management = RerankingManagement(self._app)
-
-        if self._app.f_user_management:
-            with gr.Tab("Users", visible=False) as self.user_management_tab:
-                self.user_management = UserManagement(self._app)
-
-    def on_subscribe_public_events(self):
-        if self._app.f_user_management:
-            self._app.subscribe_event(
-                name="onSignIn",
-                definition={
-                    "fn": self.toggle_user_management,
-                    "inputs": [self._app.user_id],
-                    "outputs": [self.user_management_tab],
-                    "show_progress": "hidden",
-                },
-            )
-
-            self._app.subscribe_event(
-                name="onSignOut",
-                definition={
-                    "fn": self.toggle_user_management,
-                    "inputs": [self._app.user_id],
-                    "outputs": [self.user_management_tab],
-                    "show_progress": "hidden",
-                },
-            )
+        if selected_tab == "Index Collections":
+            IndexManagement(self._app)
+        elif selected_tab == "LLMs":
+            LLMManagement(self._app)
+        elif selected_tab == "Embeddings":
+            EmbeddingManagement(self._app)
+        elif selected_tab == "Rerankings":
+            RerankingManagement(self._app)
+        elif selected_tab == "Users":
+            if self._app.f_user_management and st.session_state.get("is_admin"):
+                UserManagement(self._app)
 
     def toggle_user_management(self, user_id):
-        """Show/hide the user management, depending on the user's role"""
+        """Set admin visibility in session state based on user role"""
         with Session(engine) as session:
             user = session.exec(select(User).where(User.id == user_id)).first()
-            if user and user.admin:
-                return gr.update(visible=True)
-
-            return gr.update(visible=False)
+            st.session_state["is_admin"] = bool(user and user.admin)

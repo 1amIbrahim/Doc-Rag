@@ -125,48 +125,6 @@ class SettingGroup(BaseModel):
     index: SettingIndexGroup = Field(default_factory=SettingIndexGroup)
     reasoning: SettingReasoningGroup = Field(default_factory=SettingReasoningGroup)
 
-    import streamlit as st
-
-def render_setting_item(setting_item, value):
-    """
-    Renders a single setting item based on its type and value.
-    
-    Args:
-        setting_item: The setting item object containing its metadata.
-        value: The current value for the setting.
-    
-    Returns:
-        The Streamlit widget used to render the setting item.
-    """
-    component_type = setting_item.component
-
-    # Rendering based on the component type
-    if component_type == "text":
-        return st.text_input(setting_item.name, value=value, key=setting_item.name)
-    
-    elif component_type == "number":
-        return st.number_input(setting_item.name, value=value, key=setting_item.name)
-    
-    elif component_type == "boolean":
-        return st.checkbox(setting_item.name, value=value, key=setting_item.name)
-    
-    elif component_type == "select":
-        return st.selectbox(setting_item.name, options=setting_item.choices, index=setting_item.choices.index(value) if value in setting_item.choices else 0, key=setting_item.name)
-    
-    elif component_type == "multiselect":
-        return st.multiselect(setting_item.name, options=setting_item.choices, default=value, key=setting_item.name)
-    
-    elif component_type == "slider":
-        return st.slider(setting_item.name, min_value=setting_item.metadata.get("min", 0), max_value=setting_item.metadata.get("max", 100), value=value, key=setting_item.name)
-    
-    elif component_type == "password":
-        return st.text_input(setting_item.name, value=value, type="password", key=setting_item.name)
-
-    else:
-        st.warning(f"Unsupported component type: {component_type}")
-        return None
-
-    
     def flatten(self) -> dict:
         """Render the setting group into value"""
         output = {}

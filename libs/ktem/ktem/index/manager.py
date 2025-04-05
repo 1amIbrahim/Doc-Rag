@@ -198,3 +198,23 @@ class IndexManager:
 
     def info(self):
         return {index.id: index for index in self._indices}
+    
+    def format_description(index_type_cls):
+        """Returns a formatted description of the index type."""
+        return f"Index Type: {index_type_cls.__name__}\nDescription: {index_type_cls.__doc__}"
+
+        
+    def on_index_type_change(self, index_type: str):
+        """Handles index type selection and returns default config and description."""
+        if index_type not in self.manager.index_types:
+            return "", "Invalid index type"
+
+        index_type_cls = self.manager.index_types[index_type]
+        required_config = {
+            key: value.get("value", None)
+            for key, value in index_type_cls.get_admin_settings().items()
+        }
+        
+        import yaml
+        return yaml.dump(required_config, sort_keys=False), format_description(index_type_cls)
+

@@ -1,8 +1,6 @@
-from importlib.metadata import version
-from pathlib import Path
-
-import gradio as gr
+import streamlit as st
 import requests
+from pathlib import Path
 from decouple import config
 from theflow.settings import settings
 
@@ -16,7 +14,7 @@ def get_remote_doc(url: str) -> str:
         res.raise_for_status()
         return res.text
     except Exception as e:
-        print(f"Failed to fetch document from {url}: {e}")
+        st.error(f"Failed to fetch document from {url}: {e}")
         return ""
 
 
@@ -24,10 +22,9 @@ def download_changelogs(release_url: str) -> str:
     try:
         res = requests.get(release_url).json()
         changelogs = res.get("body", "")
-
         return changelogs
     except Exception as e:
-        print(f"Failed to fetch changelogs from {release_url}: {e}")
+        st.error(f"Failed to fetch changelogs from {release_url}: {e}")
         return ""
 
 
@@ -38,82 +35,87 @@ class HelpPage:
         doc_dir: str = settings.KH_DOC_DIR,
         remote_content_url: str = "https://raw.githubusercontent.com/Cinnamon/kotaemon",
         app_version: str | None = settings.KH_APP_VERSION,
-        changelogs_cache_dir: str
-        | Path = (Path(settings.KH_APP_DATA_DIR) / "changelogs"),
+        changelogs_cache_dir: str | Path = Path(settings.KH_APP_DATA_DIR) / "changelogs",
     ):
-        self._app = app
+        self.app = app
         self.doc_dir = Path(doc_dir)
         self.remote_content_url = remote_content_url
         self.app_version = app_version
         self.changelogs_cache_dir = Path(changelogs_cache_dir)
-
         self.changelogs_cache_dir.mkdir(parents=True, exist_ok=True)
 
-        about_md_dir = self.doc_dir / "about.md"
-        if about_md_dir.exists():
-            with (self.doc_dir / "about.md").open(encoding="utf-8") as fi:
+    def render(self):
+        """Render the Help Page UI using Streamlit."""
+
+        st.title("Help & Documentation")
+
+        # About Section
+        about_md = ""
+        about_md_path = self.doc_dir / "about.md"
+        if about_md_path.exists():
+            with about_md_path.open(encoding="utf-8") as fi:
                 about_md = fi.read()
-        else:  # fetch from remote
+        else:
             about_md = get_remote_doc(
                 f"{self.remote_content_url}/v{self.app_version}/docs/about.md"
             )
-        if about_md:
-            with gr.Accordion("About"):
-                if self.app_version:
-                    about_md = f"Version: {self.app_version}\n\n{about_md}"
-                gr.Markdown(about_md)
 
+        if about_md:
+            with st.expander("About"):
+                if self.app_version:
+                    st.markdown(f"**Version:** {self.app_version}\n\n{about_md}")
+                else:
+                    st.markdown(about_md)
+
+        # Demo Mode Info
         if KH_DEMO_MODE:
-            with gr.Accordion("Create Your Own Space"):
-                gr.Markdown(
+            with st.expander("Create Your Own Space"):
+                st.markdown(
                     "This is a demo with limited functionality. "
-                    "Use **Create space** button to install Kotaemon "
+                    "Use the button below to install Kotaemon "
                     "in your own space with all features "
-                    "(including upload and manage your private "
+                    "(including uploading and managing your private "
                     "documents securely)."
                 )
-                gr.Button(
-                    value="Create Your Own Space",
-                    link=HF_SPACE_URL,
-                    variant="primary",
-                    size="lg",
-                )
+                st.markdown(f"[Create Your Own Space]({HF_SPACE_URL})", unsafe_allow_html=True)
 
-        user_guide_md_dir = self.doc_dir / "usage.md"
-        if user_guide_md_dir.exists():
-            with (self.doc_dir / "usage.md").open(encoding="utf-8") as fi:
+        # User Guide Section
+        user_guide_md = ""
+        user_guide_md_path = self.doc_dir / "usage.md"
+        if user_guide_md_path.exists():
+            with user_guide_md_path.open(encoding="utf-8") as fi:
                 user_guide_md = fi.read()
-        else:  # fetch from remote
+        else:
             user_guide_md = get_remote_doc(
                 f"{self.remote_content_url}/v{self.app_version}/docs/usage.md"
             )
+
         if user_guide_md:
-            with gr.Accordion("User Guide", open=not KH_DEMO_MODE):
-                gr.Markdown(user_guide_md)
+            with st.expander("User Guide"):
+                st.markdown(user_guide_md)
 
+        # Changelog Section
         if self.app_version:
-            # try retrieve from cache
             changelogs = ""
+            changelog_file = self.changelogs_cache_dir / f"{self.app_version}.md"
 
-            if (self.changelogs_cache_dir / f"{version}.md").exists():
-                with open(self.changelogs_cache_dir / f"{version}.md", "r") as fi:
+            if changelog_file.exists():
+                with changelog_file.open("r") as fi:
                     changelogs = fi.read()
             else:
-                release_url_base = (
-                    "https://api.github.com/repos/Cinnamon/kotaemon/releases"
-                )
+                release_url_base = "https://api.github.com/repos/Cinnamon/kotaemon/releases"
                 changelogs = download_changelogs(
-                    release_url=f"{release_url_base}/tags/v{self.app_version}"
+                    f"{release_url_base}/tags/v{self.app_version}"
                 )
-
-                # cache the changelogs
-                if not self.changelogs_cache_dir.exists():
-                    self.changelogs_cache_dir.mkdir(parents=True, exist_ok=True)
-                with open(
-                    self.changelogs_cache_dir / f"{self.app_version}.md", "w"
-                ) as fi:
+                with changelog_file.open("w") as fi:
                     fi.write(changelogs)
 
             if changelogs:
-                with gr.Accordion(f"Changelogs (v{self.app_version})"):
-                    gr.Markdown(changelogs)
+                with st.expander(f"Changelogs (v{self.app_version})"):
+                    st.markdown(changelogs)
+
+
+# Example usage
+if __name__ == "__main__":
+    help_page = HelpPage()
+    help_page.render()

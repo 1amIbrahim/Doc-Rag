@@ -3,8 +3,8 @@ import json
 import re
 from copy import deepcopy
 from typing import Optional
-
-import gradio as gr
+from sqlalchemy import select
+import streamlit as st
 from decouple import config
 from ktem.app import BasePage
 from ktem.components import reasonings
@@ -195,933 +195,380 @@ function(_, __) {
     return [api_key, _];
 }
 """
-
+if not KH_DEMO_MODE:
+    PLACEHOLDER_TEXT = (
+        "This is the beginning of a new conversation.\n"
+        "Start by uploading a file or a web URL. "
+        "Visit Files tab for more options (e.g: GraphRAG)."
+    )
+else:
+    PLACEHOLDER_TEXT = (
+        "Welcome to Kotaemon Demo. "
+        "Start by browsing preloaded conversations to get onboard.\n"
+        "Check out Hint section for more tips."
+    )
 
 class ChatPage(BasePage):
     def __init__(self, app):
         self._app = app
         self._indices_input = []
 
+        # Initialize session state variables if not already set
+        if "preview_links" not in st.session_state:
+            st.session_state["preview_links"] = None
+        if "reasoning_type" not in st.session_state:
+            st.session_state["reasoning_type"] = None
+        if "conversation_renamed" not in st.session_state:
+            st.session_state["conversation_renamed"] = False
+        if "use_suggestion" not in st.session_state:
+            st.session_state["use_suggestion"] = getattr(flowsettings, "KH_FEATURE_CHAT_SUGGESTION", False)
+        if "info_panel_expanded" not in st.session_state:
+            st.session_state["info_panel_expanded"] = True
+        if "command_state" not in st.session_state:
+            st.session_state["command_state"] = None
+        if "user_api_key" not in st.session_state:
+            st.session_state["user_api_key"] = ""
+
         self.on_building_ui()
 
-        self._preview_links = gr.State(value=None)
-        self._reasoning_type = gr.State(value=None)
-        self._conversation_renamed = gr.State(value=False)
-        self._use_suggestion = gr.State(
-            value=getattr(flowsettings, "KH_FEATURE_CHAT_SUGGESTION", False)
-        )
-        self._info_panel_expanded = gr.State(value=True)
-        self._command_state = gr.State(value=None)
-        self._user_api_key = gr.Text(value="", visible=False)
-
     def on_building_ui(self):
-        with gr.Row():
-            self.state_chat = gr.State(STATE)
-            self.state_retrieval_history = gr.State([])
-            self.state_plot_history = gr.State([])
-            self.state_plot_panel = gr.State(None)
-            self.first_selector_choices = gr.State(None)
+        # Store initial states in session state
+        if "state_chat" not in st.session_state:
+            st.session_state["state_chat"] = "STATE"
+            st.session_state["state_retrieval_history"] = []
+            st.session_state["state_plot_history"] = []
+            st.session_state["state_plot_panel"] = None
+            st.session_state["first_selector_choices"] = None
 
-            with gr.Column(scale=1, elem_id="conv-settings-panel") as self.conv_column:
-                self.chat_control = ConversationControl(self._app)
+        col1, col2, col3 = st.columns([1, 4, 2])  # Layout: Sidebar | Chat Area | Info Panel
 
-                for index_id, index in enumerate(self._app.index_manager.indices):
-                    index.selector = None
-                    index_ui = index.get_selector_component_ui()
-                    if not index_ui:
-                        # the index doesn't have a selector UI component
-                        continue
+        # ---- Conversation Settings Panel ----
+        with col1:
+            st.markdown("### Conversation Settings")
+            self.chat_control = ConversationControl(self._app)
 
-                    index_ui.unrender()  # need to rerender later within Accordion
-                    is_first_index = index_id == 0
-                    index_name = index.name
+            for index_id, index in enumerate(self._app.index_manager.indices):
+                index.selector = None
+                index_ui = index.get_selector_component_ui()
+                if not index_ui:
+                    continue
 
-                    if KH_DEMO_MODE and is_first_index:
-                        index_name = "Select from Paper Collection"
+                 # Need to rerender later within Accordion
+                is_first_index = index_id == 0
+                index_name = index.name if not KH_DEMO_MODE else "Select from Paper Collection"
 
-                    with gr.Accordion(
-                        label=index_name,
-                        open=is_first_index,
-                        elem_id=f"index-{index_id}",
-                    ):
-                        index_ui.render()
-                        gr_index = index_ui.as_gradio_component()
+                with st.expander(index_name, expanded=is_first_index):
+                    index_ui.render()
+                    
 
-                        # get the file selector choices for the first index
-                        if index_id == 0:
-                            self.first_selector_choices = index_ui.selector_choices
-                            self.first_indexing_url_fn = None
+                    if is_first_index:
+                        st.session_state["first_selector_choices"] = index_ui.selector_choices
 
-                        if gr_index:
-                            if isinstance(gr_index, list):
-                                index.selector = tuple(
-                                    range(
-                                        len(self._indices_input),
-                                        len(self._indices_input) + len(gr_index),
-                                    )
-                                )
-                                index.default_selector = index_ui.default()
-                                self._indices_input.extend(gr_index)
-                            else:
-                                index.selector = len(self._indices_input)
-                                index.default_selector = index_ui.default()
-                                self._indices_input.append(gr_index)
-                        setattr(self, f"_index_{index.id}", index_ui)
+            # ---- Chat Suggestion ----
+            self.chat_suggestion = ChatSuggestion(self._app)
 
-                self.chat_suggestion = ChatSuggestion(self._app)
+            # ---- Quick Upload Section ----
+            if len(self._app.index_manager.indices) > 0:
+                quick_upload_label = "Quick Upload" if not KH_DEMO_MODE else "Or input new paper URL"
+                with st.expander(quick_upload_label):
+                    st.markdown("Upload a file or paste URLs")
 
-                if len(self._app.index_manager.indices) > 0:
-                    quick_upload_label = (
-                        "Quick Upload" if not KH_DEMO_MODE else "Or input new paper URL"
-                    )
+                    uploaded_files = st.file_uploader("Upload files", accept_multiple_files=True)
+                    pasted_url = st.text_input("Paste URL")
 
-                    with gr.Accordion(label=quick_upload_label) as _:
-                        self.quick_file_upload_status = gr.Markdown()
-                        if not KH_DEMO_MODE:
-                            self.quick_file_upload = File(
-                                file_types=list(KH_DEFAULT_FILE_EXTRACTORS.keys()),
-                                file_count="multiple",
-                                container=True,
-                                show_label=False,
-                                elem_id="quick-file",
-                            )
-                        self.quick_urls = gr.Textbox(
-                            placeholder=(
-                                "Or paste URLs"
-                                if not KH_DEMO_MODE
-                                else "Paste Arxiv URLs\n(https://arxiv.org/abs/xxx)"
-                            ),
-                            lines=1,
-                            container=False,
-                            show_label=False,
-                            elem_id=(
-                                "quick-url" if not KH_DEMO_MODE else "quick-url-demo"
-                            ),
-                        )
+            # ---- Report Issue or Related Papers ----
+            if not KH_DEMO_MODE:
+                st.button("Report an Issue")
+            else:
+                with st.expander("Related Papers", expanded=False):
+                    st.markdown("Related papers content")
 
-                if not KH_DEMO_MODE:
-                    self.report_issue = ReportIssue(self._app)
-                else:
-                    with gr.Accordion(label="Related papers", open=False):
-                        self.related_papers = gr.Markdown(elem_id="related-papers")
+            st.markdown("### Suggested Follow-up Questions")
+            self.chat_suggestion.show_suggestions()
 
-                    self.hint_page = HintPage(self._app)
+            
+        # ---- Chat Panel ----
+        with col2:
+            # Initialize chat history in session state
+            if "chat_history" not in st.session_state:
+                st.session_state.chat_history = []
 
-            with gr.Column(scale=6, elem_id="chat-area"):
-                if KH_DEMO_MODE:
-                    self.paper_list = PaperListPage(self._app)
+            chat_container = st.container()
 
-                self.chat_panel = ChatPanel(self._app)
+            with chat_container:
+                for message in st.session_state.chat_history:
+                    role, text = message
+                    if role == "user":
+                        st.markdown(f"**You:** {text}")
+                    else:
+                        st.markdown(f"**Bot:** {text}")
 
-                with gr.Accordion(
-                    label="Chat settings",
-                    elem_id="chat-settings-expand",
-                    open=False,
-                    visible=not KH_DEMO_MODE,
-                ) as self.chat_settings:
-                    with gr.Row(elem_id="quick-setting-labels"):
-                        gr.HTML("Reasoning method")
-                        gr.HTML(
-                            "Model", visible=not KH_DEMO_MODE and not KH_SSO_ENABLED
-                        )
-                        gr.HTML("Language")
+            # Input box for chat
+            chat_input = st.text_input("Type a message...", placeholder=PLACEHOLDER_TEXT)
 
-                    with gr.Row():
-                        reasoning_setting = (
-                            self._app.default_settings.reasoning.settings["use"]
-                        )
-                        model_setting = self._app.default_settings.reasoning.options[
-                            "simple"
-                        ].settings["llm"]
-                        language_setting = (
-                            self._app.default_settings.reasoning.settings["lang"]
-                        )
-                        citation_setting = self._app.default_settings.reasoning.options[
-                            "simple"
-                        ].settings["highlight_citation"]
+            # Submit button
+            if st.button("Send"):
+                if chat_input:
+                    pass
 
-                        self.reasoning_type = gr.Dropdown(
-                            choices=reasoning_setting.choices[:REASONING_LIMITS],
-                            value=reasoning_setting.value,
-                            container=False,
-                            show_label=False,
-                        )
-                        self.model_type = gr.Dropdown(
-                            choices=model_setting.choices,
-                            value=model_setting.value,
-                            container=False,
-                            show_label=False,
-                            visible=not KH_DEMO_MODE and not KH_SSO_ENABLED,
-                        )
-                        self.language = gr.Dropdown(
-                            choices=language_setting.choices,
-                            value=language_setting.value,
-                            container=False,
-                            show_label=False,
-                        )
+            with st.expander("Chat Settings", expanded=False):
+                st.markdown("#### Chat Configuration")
+                reasoning_method = st.selectbox("Reasoning Method", self._app.default_settings.reasoning.settings["use"].choices)
+                model_type = st.selectbox("Model", self._app.default_settings.reasoning.options["simple"].settings["llm"].choices)
+                language = st.selectbox("Language", self._app.default_settings.reasoning.settings["lang"].choices)
+                citation = st.selectbox("Citation Highlighting", self._app.default_settings.reasoning.options["simple"].settings["highlight_citation"].choices)
 
-                        self.citation = gr.Dropdown(
-                            choices=citation_setting.choices,
-                            value=citation_setting.value,
-                            container=False,
-                            show_label=False,
-                            interactive=True,
-                            elem_id="citation-dropdown",
-                        )
+                use_mindmap = st.checkbox("Enable Mindmap", value=True)
 
-                        if not config("USE_LOW_LLM_REQUESTS", default=False, cast=bool):
-                            self.use_mindmap = gr.State(value=True)
-                            self.use_mindmap_check = gr.Checkbox(
-                                label="Mindmap (on)",
-                                container=False,
-                                elem_id="use-mindmap-checkbox",
-                                value=True,
-                            )
-                        else:
-                            self.use_mindmap = gr.State(value=False)
-                            self.use_mindmap_check = gr.Checkbox(
-                                label="Mindmap (off)",
-                                container=False,
-                                elem_id="use-mindmap-checkbox",
-                                value=False,
-                            )
+        # ---- Information Panel ----
+        with col3:
+            with st.expander("Information Panel", expanded=True):
+                st.markdown("### Info & Visualization")
+                st.markdown("Placeholder for information panel")
+                st.empty()  # Placeholder for plots or additional UI elements.
 
-            with gr.Column(
-                scale=INFO_PANEL_SCALES[False], elem_id="chat-info-panel"
-            ) as self.info_column:
-                with gr.Accordion(
-                    label="Information panel", open=True, elem_id="info-expand"
-                ):
-                    self.modal = gr.HTML("<div id='pdf-modal'></div>")
-                    self.plot_panel = gr.Plot(visible=False)
-                    self.info_panel = gr.HTML(elem_id="html-info-panel")
-
-        self.followup_questions = self.chat_suggestion.examples
-        self.followup_questions_ui = self.chat_suggestion.accordion
-
-    def _json_to_plot(self, json_dict: dict | None):
+        # Follow-up Questions Section
+        
+    def json_to_plot(self,json_dict: dict | None):
+        """Converts JSON data to a Plotly chart and displays it in Streamlit."""
         if json_dict:
-            plot = from_json(json_dict)
-            plot = gr.update(visible=True, value=plot)
+            plot = from_json(json_dict)  # Convert JSON to a Plotly figure
+            st.plotly_chart(plot, use_container_width=True)  # Display in Streamlit
         else:
-            plot = gr.update(visible=False)
-        return plot
+            st.write("No plot available.")  # Show a placeholder message
 
-    def on_register_events(self):
-        # first index paper recommendation
-        if KH_DEMO_MODE and len(self._indices_input) > 0:
-            self._indices_input[1].change(
-                self.get_recommendations,
-                inputs=[self.first_selector_choices, self._indices_input[1]],
-                outputs=[self.related_papers],
-            ).then(
-                fn=None,
-                inputs=None,
-                outputs=None,
-                js=recommended_papers_js,
-            )
 
-        chat_event = (
-            gr.on(
-                triggers=[
-                    self.chat_panel.text_input.submit,
-                ],
-                fn=self.submit_msg,
-                inputs=[
-                    self.chat_panel.text_input,
-                    self.chat_panel.chatbot,
-                    self._app.user_id,
-                    self._app.settings_state,
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation_rn,
-                    self.first_selector_choices,
-                ],
-                outputs=[
-                    self.chat_panel.text_input,
-                    self.chat_panel.chatbot,
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation,
-                    self.chat_control.conversation_rn,
-                    # file selector from the first index
-                    self._indices_input[0],
-                    self._indices_input[1],
-                    self._command_state,
-                ],
-                concurrency_limit=20,
-                show_progress="hidden",
-            )
-            .success(
-                fn=self.chat_fn,
-                inputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_panel.chatbot,
-                    self._app.settings_state,
-                    self._reasoning_type,
-                    self.model_type,
-                    self.use_mindmap,
-                    self.citation,
-                    self.language,
-                    self.state_chat,
-                    self._command_state,
-                    self._app.user_id,
-                ]
-                + self._indices_input,
-                outputs=[
-                    self.chat_panel.chatbot,
-                    self.info_panel,
-                    self.plot_panel,
-                    self.state_plot_panel,
-                    self.state_chat,
-                ],
-                concurrency_limit=20,
-                show_progress="minimal",
-            )
-            .then(
-                fn=lambda: True,
-                inputs=None,
-                outputs=[self._preview_links],
-                js=pdfview_js,
-            )
-            .success(
-                fn=self.check_and_suggest_name_conv,
-                inputs=self.chat_panel.chatbot,
-                outputs=[
-                    self.chat_control.conversation_rn,
-                    self._conversation_renamed,
-                ],
-            )
-            .success(
-                self.chat_control.rename_conv,
-                inputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation_rn,
-                    self._conversation_renamed,
-                    self._app.user_id,
-                ],
-                outputs=[
-                    self.chat_control.conversation,
-                    self.chat_control.conversation,
-                    self.chat_control.conversation_rn,
-                ],
-                show_progress="hidden",
-            )
-        )
+    def on_register_events():
+        # Session state initialization
+        if "conversation" not in st.session_state:
+            st.session_state.conversation = []
+        if "user_id" not in st.session_state:
+            st.session_state.user_id = "demo_user"
+        if "conv_id" not in st.session_state:
+            st.session_state.conv_id = None
+        if "conv_name" not in st.session_state:
+            st.session_state.conv_name = None
+        if "first_selector_choices" not in st.session_state:
+            st.session_state.first_selector_choices = []
 
-        onSuggestChatEvent = {
-            "fn": self.suggest_chat_conv,
-            "inputs": [
-                self._app.settings_state,
-                self.language,
-                self.chat_panel.chatbot,
-                self._use_suggestion,
-            ],
-            "outputs": [
-                self.followup_questions_ui,
-                self.followup_questions,
-            ],
-            "show_progress": "hidden",
-        }
-        # chat suggestion toggle
-        chat_event = chat_event.success(**onSuggestChatEvent)
+        # Sidebar settings
+        with st.sidebar:
+            st.header("Chat Settings")
+            st.session_state.selected_model = st.selectbox("Model", ["GPT-4", "Llama", "Claude"], index=0)
+            st.session_state.language = st.selectbox("Language", ["English", "French", "German"], index=0)
+            st.session_state.show_mindmap = st.checkbox("Enable Mindmap", value=True)
 
-        # final data persist
-        if not KH_DEMO_MODE:
-            chat_event = chat_event.then(
-                fn=self.persist_data_source,
-                inputs=[
-                    self.chat_control.conversation_id,
-                    self._app.user_id,
-                    self.info_panel,
-                    self.state_plot_panel,
-                    self.state_retrieval_history,
-                    self.state_plot_history,
-                    self.chat_panel.chatbot,
-                    self.state_chat,
-                ]
-                + self._indices_input,
-                outputs=[
-                    self.state_retrieval_history,
-                    self.state_plot_history,
-                ],
-                concurrency_limit=20,
-            )
+        st.title("Chatbot Interface")
 
-        self.chat_control.btn_info_expand.click(
-            fn=lambda is_expanded: (
-                gr.update(scale=INFO_PANEL_SCALES[is_expanded]),
-                not is_expanded,
-            ),
-            inputs=self._info_panel_expanded,
-            outputs=[self.info_column, self._info_panel_expanded],
-        )
-        self.chat_control.btn_chat_expand.click(
-            fn=None, inputs=None, js="function() {toggleChatColumn();}"
-        )
+        # User input
+        user_input = st.text_input("Your Message:", key="chat_input")
 
-        if KH_DEMO_MODE:
-            self.chat_control.btn_demo_logout.click(
-                fn=None,
-                js=self.chat_control.logout_js,
-            )
-            self.chat_control.btn_new.click(
-                fn=lambda: self.chat_control.select_conv("", None),
-                outputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation,
-                    self.chat_control.conversation_rn,
-                    self.chat_panel.chatbot,
-                    self.followup_questions,
-                    self.info_panel,
-                    self.state_plot_panel,
-                    self.state_retrieval_history,
-                    self.state_plot_history,
-                    self.chat_control.cb_is_public,
-                    self.state_chat,
-                ]
-                + self._indices_input,
-            ).then(
-                lambda: (gr.update(visible=False), gr.update(visible=True)),
-                outputs=[self.paper_list.accordion, self.chat_settings],
-            ).then(
-                fn=None,
-                inputs=None,
-                js=chat_input_focus_js,
-            )
+        if st.button("Send"):
+            if user_input:
+                # Prepare chat input for submit_msg
+                chat_input_dict = {"text": user_input}
 
-        if not KH_DEMO_MODE:
-            self.chat_control.btn_new.click(
-                self.chat_control.new_conv,
-                inputs=self._app.user_id,
-                outputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation,
-                ],
-                show_progress="hidden",
-            ).then(
-                self.chat_control.select_conv,
-                inputs=[self.chat_control.conversation, self._app.user_id],
-                outputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation,
-                    self.chat_control.conversation_rn,
-                    self.chat_panel.chatbot,
-                    self.followup_questions,
-                    self.info_panel,
-                    self.state_plot_panel,
-                    self.state_retrieval_history,
-                    self.state_plot_history,
-                    self.chat_control.cb_is_public,
-                    self.state_chat,
-                ]
-                + self._indices_input,
-                show_progress="hidden",
-            ).then(
-                fn=self._json_to_plot,
-                inputs=self.state_plot_panel,
-                outputs=self.plot_panel,
-            ).then(
-                fn=None,
-                inputs=None,
-                js=chat_input_focus_js,
-            )
+                # Simulated settings object
+                settings = {
+                    "model": st.session_state.selected_model,
+                    "language": st.session_state.language,
+                }
 
-            self.chat_control.btn_del.click(
-                lambda id: self.toggle_delete(id),
-                inputs=[self.chat_control.conversation_id],
-                outputs=[
-                    self.chat_control._new_delete,
-                    self.chat_control._delete_confirm,
-                ],
-            )
-            self.chat_control.btn_del_conf.click(
-                self.chat_control.delete_conv,
-                inputs=[self.chat_control.conversation_id, self._app.user_id],
-                outputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation,
-                ],
-                show_progress="hidden",
-            ).then(
-                self.chat_control.select_conv,
-                inputs=[self.chat_control.conversation, self._app.user_id],
-                outputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation,
-                    self.chat_control.conversation_rn,
-                    self.chat_panel.chatbot,
-                    self.followup_questions,
-                    self.info_panel,
-                    self.state_plot_panel,
-                    self.state_retrieval_history,
-                    self.state_plot_history,
-                    self.chat_control.cb_is_public,
-                    self.state_chat,
-                ]
-                + self._indices_input,
-                show_progress="hidden",
-            ).then(
-                fn=self._json_to_plot,
-                inputs=self.state_plot_panel,
-                outputs=self.plot_panel,
-            ).then(
-                lambda: self.toggle_delete(""),
-                outputs=[
-                    self.chat_control._new_delete,
-                    self.chat_control._delete_confirm,
-                ],
-            )
-            self.chat_control.btn_del_cnl.click(
-                lambda: self.toggle_delete(""),
-                outputs=[
-                    self.chat_control._new_delete,
-                    self.chat_control._delete_confirm,
-                ],
-            )
-            self.chat_control.btn_conversation_rn.click(
-                lambda: gr.update(visible=True),
-                outputs=[
-                    self.chat_control.conversation_rn,
-                ],
-            )
-            self.chat_control.conversation_rn.submit(
-                self.chat_control.rename_conv,
-                inputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation_rn,
-                    gr.State(value=True),
-                    self._app.user_id,
-                ],
-                outputs=[
-                    self.chat_control.conversation,
-                    self.chat_control.conversation,
-                    self.chat_control.conversation_rn,
-                ],
-                show_progress="hidden",
-            )
+                # Call the actual chat handler
+                result = submit_msg(
+                    chat_input=chat_input_dict,
+                    chat_history=st.session_state.conversation,
+                    user_id=st.session_state.user_id,
+                    settings=settings,
+                    conv_id=st.session_state.conv_id,
+                    conv_name=st.session_state.conv_name,
+                    first_selector_choices=st.session_state.first_selector_choices,
+                )
 
-        onConvSelect = (
-            self.chat_control.conversation.select(
-                self.chat_control.select_conv,
-                inputs=[self.chat_control.conversation, self._app.user_id],
-                outputs=[
-                    self.chat_control.conversation_id,
-                    self.chat_control.conversation,
-                    self.chat_control.conversation_rn,
-                    self.chat_panel.chatbot,
-                    self.followup_questions,
-                    self.info_panel,
-                    self.state_plot_panel,
-                    self.state_retrieval_history,
-                    self.state_plot_history,
-                    self.chat_control.cb_is_public,
-                    self.state_chat,
-                ]
-                + self._indices_input,
-                show_progress="hidden",
-            )
-            .then(
-                fn=self._json_to_plot,
-                inputs=self.state_plot_panel,
-                outputs=self.plot_panel,
-            )
-            .then(
-                lambda: self.toggle_delete(""),
-                outputs=[
-                    self.chat_control._new_delete,
-                    self.chat_control._delete_confirm,
-                ],
-            )
-        )
+                if result:
+                    st.session_state.conversation = result["chat_history"]
+                    st.session_state.conv_id = result["new_conv_id"]
+                    st.session_state.conv_name = result["new_conv_name"]
+                    st.session_state.first_selector_choices = list(set(st.session_state.first_selector_choices + [(url, fid) for url, fid in zip(result.get("file_ids", []), result.get("file_ids", []))]))
 
-        if KH_DEMO_MODE:
-            onConvSelect = onConvSelect.then(
-                lambda: (gr.update(visible=False), gr.update(visible=True)),
-                outputs=[self.paper_list.accordion, self.chat_settings],
-            )
+        # Display chat history
+        st.subheader("Chat History")
+        for speaker, text in st.session_state.conversation:
+            with st.expander(f"{'User' if speaker == text else 'AI'} says:"):
+                st.write(speaker)
 
-        onConvSelect = (
-            onConvSelect.then(
-                fn=lambda: True,
-                js=clear_bot_message_selection_js,
-            )
-            .then(
-                fn=lambda: True,
-                inputs=None,
-                outputs=[self._preview_links],
-                js=pdfview_js,
-            )
-            .then(fn=None, inputs=None, outputs=None, js=chat_input_focus_js)
-        )
+        if st.session_state.show_mindmap:
+            st.subheader("Mindmap View (Coming Soon)")
 
-        if not KH_DEMO_MODE:
-            # evidence display on message selection
-            self.chat_panel.chatbot.select(
-                self.message_selected,
-                inputs=[
-                    self.state_retrieval_history,
-                    self.state_plot_history,
-                ],
-                outputs=[
-                    self.info_panel,
-                    self.state_plot_panel,
-                ],
-            ).then(
-                fn=self._json_to_plot,
-                inputs=self.state_plot_panel,
-                outputs=self.plot_panel,
-            ).then(
-                fn=lambda: True,
-                inputs=None,
-                outputs=[self._preview_links],
-                js=pdfview_js,
-            )
+        if st.button("New Conversation"):
+            st.session_state.conversation = []
+            st.session_state.conv_id = None
+            st.session_state.conv_name = None
+            st.session_state.first_selector_choices = []
 
-        self.chat_control.cb_is_public.change(
-            self.on_set_public_conversation,
-            inputs=[self.chat_control.cb_is_public, self.chat_control.conversation],
-            outputs=None,
-            show_progress="hidden",
-        )
+    import streamlit as st
+    from sqlalchemy import select
+    import re
 
-        if not KH_DEMO_MODE:
-            # user feedback events
-            self.chat_panel.chatbot.like(
-                fn=self.is_liked,
-                inputs=[self.chat_control.conversation_id],
-                outputs=None,
-            )
-            self.report_issue.report_btn.click(
-                self.report_issue.report,
-                inputs=[
-                    self.report_issue.correctness,
-                    self.report_issue.issues,
-                    self.report_issue.more_detail,
-                    self.chat_control.conversation_id,
-                    self.chat_panel.chatbot,
-                    self._app.settings_state,
-                    self._app.user_id,
-                    self.info_panel,
-                    self.state_chat,
-                ]
-                + self._indices_input,
-                outputs=None,
-            )
+    KH_DEMO_MODE = False  # Set this according to your environment
+    DEFAULT_QUESTION = "Summarize the document."
+    WEB_SEARCH_COMMAND = "@web_search"
 
-        self.reasoning_type.change(
-            self.reasoning_changed,
-            inputs=[self.reasoning_type],
-            outputs=[self._reasoning_type],
-        )
-        self.use_mindmap_check.change(
-            lambda x: (x, gr.update(label="Mindmap " + ("(on)" if x else "(off)"))),
-            inputs=[self.use_mindmap_check],
-            outputs=[self.use_mindmap, self.use_mindmap_check],
-            show_progress="hidden",
-        )
+    def get_file_names_regex(input_str):
+        """Extract file names from input text using regex pattern @"filename"."""
+        pattern = r'@"([^"]+)"'
+        matches = re.findall(pattern, input_str)
+        input_str = re.sub(pattern, "", input_str).strip()  # Remove matches from text
+        return matches, input_str
 
-        def toggle_chat_suggestion(current_state):
-            return current_state, gr.update(visible=current_state)
-
-        def raise_error_on_state(state):
-            if not state:
-                raise ValueError("Chat suggestion disabled")
-
-        self.chat_control.cb_suggest_chat.change(
-            fn=toggle_chat_suggestion,
-            inputs=[self.chat_control.cb_suggest_chat],
-            outputs=[self._use_suggestion, self.followup_questions_ui],
-            show_progress="hidden",
-        ).then(
-            fn=raise_error_on_state,
-            inputs=[self._use_suggestion],
-            show_progress="hidden",
-        ).success(
-            **onSuggestChatEvent
-        )
-        self.chat_control.conversation_id.change(
-            lambda: gr.update(visible=False),
-            outputs=self.plot_panel,
-        )
-
-        self.followup_questions.select(
-            self.chat_suggestion.select_example,
-            outputs=[self.chat_panel.text_input],
-            show_progress="hidden",
-        ).then(
-            fn=None,
-            inputs=None,
-            outputs=None,
-            js=chat_input_focus_js,
-        )
-
-        if KH_DEMO_MODE:
-            self.paper_list.examples.select(
-                self.paper_list.select_example,
-                inputs=[self.paper_list.papers_state],
-                outputs=[self.quick_urls],
-                show_progress="hidden",
-            ).then(
-                lambda: (gr.update(visible=False), gr.update(visible=True)),
-                outputs=[self.paper_list.accordion, self.chat_settings],
-            ).then(
-                fn=None,
-                inputs=None,
-                outputs=None,
-                js=quick_urls_submit_js,
-            )
+    def get_urls(input_str):
+        """Extract URLs from the input text."""
+        pattern = r"https?://\S+"
+        matches = re.findall(pattern, input_str)
+        input_str = re.sub(pattern, "", input_str).strip()
+        return matches, input_str
 
     def submit_msg(
-        self,
         chat_input,
         chat_history,
         user_id,
         settings,
         conv_id,
         conv_name,
-        first_selector_choices,
-        request: gr.Request,
+        first_selector_choices
     ):
-        """Submit a message to the chatbot"""
-        if KH_DEMO_MODE:
-            sso_user_id = check_rate_limit("chat", request)
-            print("User ID:", sso_user_id)
-
+        """Submit a message to the chatbot (Streamlit version)."""
+        
         if not chat_input:
-            raise ValueError("Input is empty")
+            st.error("Input is empty")
+            return None
 
         chat_input_text = chat_input.get("text", "")
         file_ids = []
         used_command = None
 
-        first_selector_choices_map = {
-            item[0]: item[1] for item in first_selector_choices
-        }
+        first_selector_choices_map = {item[0]: item[1] for item in first_selector_choices}
 
-        # get all file names with pattern @"filename" in input_str
         file_names, chat_input_text = get_file_names_regex(chat_input_text)
 
-        # check if web search command is in file_names
         if WEB_SEARCH_COMMAND in file_names:
             used_command = WEB_SEARCH_COMMAND
 
-        # get all urls in input_str
         urls, chat_input_text = get_urls(chat_input_text)
 
-        if urls and self.first_indexing_url_fn:
-            print("Detected URLs", urls)
-            file_ids = self.first_indexing_url_fn(
-                "\n".join(urls),
-                True,
-                settings,
-                user_id,
-                request=None,
-            )
+        if urls:
+            st.write(f"Detected URLs: {urls}")
+            file_ids = [f"file_id_{i}" for i, _ in enumerate(urls)]  # Simulated indexing
         elif file_names:
             for file_name in file_names:
                 file_id = first_selector_choices_map.get(file_name)
                 if file_id:
                     file_ids.append(file_id)
 
-        # add new file ids to the first selector choices
         first_selector_choices.extend(zip(urls, file_ids))
 
-        # if file_ids is not empty and chat_input_text is empty
-        # set the input to summary
         if not chat_input_text and file_ids:
             chat_input_text = DEFAULT_QUESTION
 
-        # if start of conversation and no query is specified
         if not chat_input_text and not chat_history:
             chat_input_text = DEFAULT_QUESTION
 
-        if file_ids:
-            selector_output = [
-                "select",
-                gr.update(value=file_ids, choices=first_selector_choices),
-            ]
-        else:
-            selector_output = [gr.update(), gr.update()]
-
-        # check if regen mode is active
         if chat_input_text:
-            chat_history = chat_history + [(chat_input_text, None)]
+            chat_history.append((chat_input_text, None))
         else:
             if not chat_history:
-                raise gr.Error("Empty chat")
+                st.error("Empty chat")
+                return None
 
         if not conv_id:
             if not KH_DEMO_MODE:
-                id_, update = self.chat_control.new_conv(user_id)
                 with Session(engine) as session:
-                    statement = select(Conversation).where(Conversation.id == id_)
-                    name = session.exec(statement).one().name
-                    new_conv_id = id_
-                    conv_update = update
-                    new_conv_name = name
+                    new_conv = Conversation(user_id=user_id)
+                    session.add(new_conv)
+                    session.commit()
+                    session.refresh(new_conv)
+                    new_conv_id = new_conv.id
+                    new_conv_name = new_conv.name
             else:
-                new_conv_id, new_conv_name, conv_update = None, None, gr.update()
+                new_conv_id, new_conv_name = None, None
         else:
             new_conv_id = conv_id
-            conv_update = gr.update()
             new_conv_name = conv_name
 
-        return (
-            [
-                {},
-                chat_history,
-                new_conv_id,
-                conv_update,
-                new_conv_name,
-            ]
-            + selector_output
-            + [used_command]
-        )
-
-    def get_recommendations(self, first_selector_choices, file_ids):
-        first_selector_choices_map = {
-            item[1]: item[0] for item in first_selector_choices
+        return {
+            "chat_history": chat_history,
+            "new_conv_id": new_conv_id,
+            "new_conv_name": new_conv_name,
+            "file_ids": file_ids,
+            "used_command": used_command,
         }
-        file_names = [first_selector_choices_map[file_id] for file_id in file_ids]
+
+    def get_recommendations(first_selector_choices, file_ids):
+        """Get paper recommendations based on the first selected file."""
+
+        first_selector_choices_map = {item[1]: item[0] for item in first_selector_choices}
+
+        file_names = [first_selector_choices_map[file_id] for file_id in file_ids if file_id in first_selector_choices_map]
+
         if not file_names:
             return ""
 
         first_file_name = file_names[0].split(".")[0].replace("_", " ")
-        return get_recommended_papers(first_file_name)
 
-    def toggle_delete(self, conv_id):
-        if conv_id:
-            return gr.update(visible=False), gr.update(visible=True)
-        else:
-            return gr.update(visible=True), gr.update(visible=False)
+        recommendations = get_recommended_papers(first_file_name)
 
-    def on_set_public_conversation(self, is_public, convo_id):
+        return recommendations
+
+    def toggle_delete(conv_id):
+        """Toggle delete button visibility based on conversation ID."""
+        if "show_delete" not in st.session_state:
+            st.session_state["show_delete"] = True  # Default state
+
+        st.session_state["show_delete"] = False if conv_id else True
+
+    def set_public_conversation(is_public, convo_id):
+        """Set a conversation as public or private."""
         if not convo_id:
-            gr.Warning("No conversation selected")
+            st.warning("No conversation selected")
             return
 
         with Session(engine) as session:
-            statement = select(Conversation).where(Conversation.id == convo_id)
-
-            result = session.exec(statement).one()
+            result = session.exec(select(Conversation).where(Conversation.id == convo_id)).one()
+            print(result)
             name = result.name
 
             if result.is_public != is_public:
-                # Only trigger updating when user
-                # select different value from the current
                 result.is_public = is_public
                 session.add(result)
                 session.commit()
-
-                gr.Info(
-                    f"Conversation: {name} is {'public' if is_public else 'private'}."
-                )
-
-    def on_subscribe_public_events(self):
-        if self._app.f_user_management:
-            self._app.subscribe_event(
-                name="onSignIn",
-                definition={
-                    "fn": self.chat_control.reload_conv,
-                    "inputs": [self._app.user_id],
-                    "outputs": [self.chat_control.conversation],
-                    "show_progress": "hidden",
-                },
-            )
-
-            self._app.subscribe_event(
-                name="onSignOut",
-                definition={
-                    "fn": lambda: self.chat_control.select_conv("", None),
-                    "outputs": [
-                        self.chat_control.conversation_id,
-                        self.chat_control.conversation,
-                        self.chat_control.conversation_rn,
-                        self.chat_panel.chatbot,
-                        self.followup_questions,
-                        self.info_panel,
-                        self.state_plot_panel,
-                        self.state_retrieval_history,
-                        self.state_plot_history,
-                        self.chat_control.cb_is_public,
-                        self.state_chat,
-                    ]
-                    + self._indices_input,
-                    "show_progress": "hidden",
-                },
-            )
-
-    def _on_app_created(self):
-        if KH_DEMO_MODE:
-            self._app.app.load(
-                fn=lambda x: x,
-                inputs=[self._user_api_key],
-                outputs=[self._user_api_key],
-                js=fetch_api_key_js,
-            ).then(
-                fn=self.chat_control.toggle_demo_login_visibility,
-                inputs=[self._user_api_key],
-                outputs=[
-                    self.chat_control.cb_suggest_chat,
-                    self.chat_control.btn_new,
-                    self.chat_control.btn_demo_logout,
-                    self.chat_control.btn_demo_login,
-                ],
-            ).then(
-                fn=None,
-                inputs=None,
-                js=chat_input_focus_js,
-            )
-
-    def persist_data_source(
-        self,
-        convo_id,
-        user_id,
-        retrieval_msg,
-        plot_data,
-        retrival_history,
-        plot_history,
-        messages,
-        state,
-        *selecteds,
-    ):
-        """Update the data source"""
+                st.info(f"Conversation: {name} is now {'public' if is_public else 'private'}.")
+                
+    def persist_data_source(convo_id, user_id, retrieval_msg, plot_data, retrival_history, plot_history, messages, state, *selecteds):
+        """Update the data source in the database."""
+        
         if not convo_id:
-            gr.Warning("No conversation selected")
-            return
+            st.warning("No conversation selected")
+            return retrival_history, plot_history  # Return unchanged history
 
-        # if not regen, then append the new message
         if not state["app"].get("regen", False):
-            retrival_history = retrival_history + [retrieval_msg]
-            plot_history = plot_history + [plot_data]
+            retrival_history.append(retrieval_msg)
+            plot_history.append(plot_data)
         else:
             if retrival_history:
-                print("Updating retrieval history (regen=True)")
                 retrival_history[-1] = retrieval_msg
                 plot_history[-1] = plot_data
 
-        # reset regen state
         state["app"]["regen"] = False
 
-        selecteds_ = {}
-        for index in self._app.index_manager.indices:
-            if index.selector is None:
-                continue
-            if isinstance(index.selector, int):
-                selecteds_[str(index.id)] = selecteds[index.selector]
-            else:
-                selecteds_[str(index.id)] = [selecteds[i] for i in index.selector]
+        selecteds_ = {str(i): selecteds[i] for i in range(len(selecteds))}
 
         with Session(engine) as session:
-            statement = select(Conversation).where(Conversation.id == convo_id)
-            result = session.exec(statement).one()
-
-            data_source = result.data_source
-            old_selecteds = data_source.get("selected", {})
+            result = session.exec(select(Conversation).where(Conversation.id == convo_id)).one()
+            data_source = deepcopy(result.data_source)
             is_owner = result.user == user_id
 
-            # Write down to db
             result.data_source = {
-                "selected": selecteds_ if is_owner else old_selecteds,
+                "selected": selecteds_ if is_owner else data_source.get("selected", {}),
                 "messages": messages,
                 "retrieval_messages": retrival_history,
                 "plot_history": plot_history,
@@ -1133,286 +580,46 @@ class ChatPage(BasePage):
 
         return retrival_history, plot_history
 
-    def reasoning_changed(self, reasoning_type):
+    def reasoning_changed(reasoning_type):
+        """Handle changes in reasoning type."""
         if reasoning_type != DEFAULT_SETTING:
-            # override app settings state (temporary)
-            gr.Info("Reasoning type changed to `{}`".format(reasoning_type))
+            st.info(f"Reasoning type changed to `{reasoning_type}`")
         return reasoning_type
 
-    def is_liked(self, convo_id, liked: gr.LikeData):
-        with Session(engine) as session:
-            statement = select(Conversation).where(Conversation.id == convo_id)
-            result = session.exec(statement).one()
-
-            data_source = deepcopy(result.data_source)
-            likes = data_source.get("likes", [])
-            likes.append([liked.index, liked.value, liked.liked])
-            data_source["likes"] = likes
-
-            result.data_source = data_source
-            session.add(result)
-            session.commit()
-
-    def message_selected(self, retrieval_history, plot_history, msg: gr.SelectData):
-        index = msg.index[0]
-        try:
-            retrieval_content, plot_content = (
-                retrieval_history[index],
-                plot_history[index],
-            )
-        except IndexError:
-            retrieval_content, plot_content = gr.update(), None
-
-        return retrieval_content, plot_content
-
-    def create_pipeline(
-        self,
-        settings: dict,
-        session_reasoning_type: str,
-        session_llm: str,
-        session_use_mindmap: bool | str,
-        session_use_citation: str,
-        session_language: str,
-        state: dict,
-        command_state: str | None,
-        user_id: int,
-        *selecteds,
-    ):
-        """Create the pipeline from settings
-
-        Args:
-            settings: the settings of the app
-            state: the state of the app
-            selected: the list of file ids that will be served as context. If None, then
-                consider using all files
-
-        Returns:
-            - the pipeline objects
-        """
-        # override reasoning_mode by temporary chat page state
-        print(
-            "Session reasoning type",
-            session_reasoning_type,
-            "use mindmap",
-            session_use_mindmap,
-            "use citation",
-            session_use_citation,
-            "language",
-            session_language,
-        )
-        print("Session LLM", session_llm)
-        reasoning_mode = (
-            settings["reasoning.use"]
-            if session_reasoning_type in (DEFAULT_SETTING, None)
-            else session_reasoning_type
-        )
-        reasoning_cls = reasonings[reasoning_mode]
-        print("Reasoning class", reasoning_cls)
-        reasoning_id = reasoning_cls.get_info()["id"]
-
-        settings = deepcopy(settings)
-        llm_setting_key = f"reasoning.options.{reasoning_id}.llm"
-        if llm_setting_key in settings and session_llm not in (
-            DEFAULT_SETTING,
-            None,
-            "",
-        ):
-            settings[llm_setting_key] = session_llm
-
-        if session_use_mindmap not in (DEFAULT_SETTING, None):
-            settings["reasoning.options.simple.create_mindmap"] = session_use_mindmap
-
-        if session_use_citation not in (DEFAULT_SETTING, None):
-            settings[
-                "reasoning.options.simple.highlight_citation"
-            ] = session_use_citation
-
-        if session_language not in (DEFAULT_SETTING, None):
-            settings["reasoning.lang"] = session_language
-
-        # get retrievers
-        retrievers = []
-
-        if command_state == WEB_SEARCH_COMMAND:
-            # set retriever for web search
-            if not WebSearch:
-                raise ValueError("Web search back-end is not available.")
-
-            web_search = WebSearch()
-            retrievers.append(web_search)
-        else:
-            for index in self._app.index_manager.indices:
-                index_selected = []
-                if isinstance(index.selector, int):
-                    index_selected = selecteds[index.selector]
-                if isinstance(index.selector, tuple):
-                    for i in index.selector:
-                        index_selected.append(selecteds[i])
-                iretrievers = index.get_retriever_pipelines(
-                    settings, user_id, index_selected
-                )
-                retrievers += iretrievers
-
-        # prepare states
-        reasoning_state = {
-            "app": deepcopy(state["app"]),
-            "pipeline": deepcopy(state.get(reasoning_id, {})),
-        }
-
-        pipeline = reasoning_cls.get_pipeline(settings, reasoning_state, retrievers)
-
-        return pipeline, reasoning_state
-
-    def chat_fn(
-        self,
-        conversation_id,
-        chat_history,
-        settings,
-        reasoning_type,
-        llm_type,
-        use_mind_map,
-        use_citation,
-        language,
-        chat_state,
-        command_state,
-        user_id,
-        *selecteds,
-    ):
-        """Chat function"""
-        chat_input, chat_output = chat_history[-1]
-        chat_history = chat_history[:-1]
-
-        # if chat_input is empty, assume regen mode
-        if chat_output:
-            chat_state["app"]["regen"] = True
-
-        queue: asyncio.Queue[Optional[dict]] = asyncio.Queue()
-
-        # construct the pipeline
-        pipeline, reasoning_state = self.create_pipeline(
-            settings,
-            reasoning_type,
-            llm_type,
-            use_mind_map,
-            use_citation,
-            language,
-            chat_state,
-            command_state,
-            user_id,
-            *selecteds,
-        )
-        print("Reasoning state", reasoning_state)
-        pipeline.set_output_queue(queue)
-
-        text, refs, plot, plot_gr = "", "", None, gr.update(visible=False)
-        msg_placeholder = getattr(
-            flowsettings, "KH_CHAT_MSG_PLACEHOLDER", "Thinking ..."
-        )
-        print(msg_placeholder)
-        yield (
-            chat_history + [(chat_input, text or msg_placeholder)],
-            refs,
-            plot_gr,
-            plot,
-            chat_state,
-        )
-
-        try:
-            for response in pipeline.stream(chat_input, conversation_id, chat_history):
-
-                if not isinstance(response, Document):
-                    continue
-
-                if response.channel is None:
-                    continue
-
-                if response.channel == "chat":
-                    if response.content is None:
-                        text = ""
-                    else:
-                        text += response.content
-
-                if response.channel == "info":
-                    if response.content is None:
-                        refs = ""
-                    else:
-                        refs += response.content
-
-                if response.channel == "plot":
-                    plot = response.content
-                    plot_gr = self._json_to_plot(plot)
-
-                chat_state[pipeline.get_info()["id"]] = reasoning_state["pipeline"]
-
-                yield (
-                    chat_history + [(chat_input, text or msg_placeholder)],
-                    refs,
-                    plot_gr,
-                    plot,
-                    chat_state,
-                )
-        except ValueError as e:
-            print(e)
-
-        if not text:
-            empty_msg = getattr(
-                flowsettings, "KH_CHAT_EMPTY_MSG_PLACEHOLDER", "(Sorry, I don't know)"
-            )
-            print(f"Generate nothing: {empty_msg}")
-            yield (
-                chat_history + [(chat_input, text or empty_msg)],
-                refs,
-                plot_gr,
-                plot,
-                chat_state,
-            )
-
-    def check_and_suggest_name_conv(self, chat_history):
+    def check_and_suggest_name_conv(chat_history):
+        """Suggest a conversation name based on chat history."""
         suggest_pipeline = SuggestConvNamePipeline()
-        new_name = gr.update()
+        new_name = ""
         renamed = False
 
-        # check if this is a newly created conversation
         if len(chat_history) == 1:
             suggested_name = suggest_pipeline(chat_history).text
-            suggested_name = strip_think_tag(suggested_name)
-            suggested_name = suggested_name.replace('"', "").replace("'", "")[:40]
-            new_name = gr.update(value=suggested_name)
+            suggested_name = re.sub(r'["\']', "", suggested_name)[:40]
+            new_name = suggested_name
             renamed = True
 
         return new_name, renamed
 
-    def suggest_chat_conv(
-        self,
-        settings,
-        session_language,
-        chat_history,
-        use_suggestion,
-    ):
-        target_language = (
-            session_language
-            if session_language not in (DEFAULT_SETTING, None)
-            else settings["reasoning.lang"]
-        )
+    def suggest_chat_conv(settings, session_language, chat_history, use_suggestion):
+        """Suggest follow-up questions based on chat history."""
+        
+        target_language = session_language if session_language != DEFAULT_SETTING else settings.get("reasoning.lang", "en")
+
         if use_suggestion:
             suggest_pipeline = SuggestFollowupQuesPipeline()
-            suggest_pipeline.lang = SUPPORTED_LANGUAGE_MAP.get(
-                target_language, "English"
-            )
-            suggested_questions = [[each] for each in ChatSuggestion.CHAT_SAMPLES]
+            suggest_pipeline.lang = target_language
+            suggested_questions = [["Example Question 1"], ["Example Question 2"]]
 
             if len(chat_history) >= 1:
                 suggested_resp = suggest_pipeline(chat_history).text
-                if ques_res := re.search(
-                    r"\[(.*?)\]", re.sub("\n", "", suggested_resp)
-                ):
-                    ques_res_str = ques_res.group()
+                match = re.search(r"\[(.*?)\]", re.sub("\n", "", suggested_resp))
+                if match:
                     try:
-                        suggested_questions = json.loads(ques_res_str)
-                        suggested_questions = [[x] for x in suggested_questions]
+                        suggested_questions = [[q] for q in json.loads(match.group())]
                     except Exception:
                         pass
 
-            return gr.update(visible=True), suggested_questions
+            return True, suggested_questions
 
-        return gr.update(visible=False), gr.update()
+        return False, []
+

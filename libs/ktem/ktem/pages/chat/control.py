@@ -2,7 +2,7 @@ import logging
 import os
 from copy import deepcopy
 
-import gradio as gr
+import streamlit as st
 from ktem.app import BasePage
 from ktem.db.models import Conversation, User, engine
 from sqlmodel import Session, or_, select
@@ -17,455 +17,156 @@ logger = logging.getLogger(__name__)
 
 KH_DEMO_MODE = getattr(flowsettings, "KH_DEMO_MODE", False)
 KH_SSO_ENABLED = getattr(flowsettings, "KH_SSO_ENABLED", False)
-ASSETS_DIR = "assets/icons"
-if not os.path.isdir(ASSETS_DIR):
-    ASSETS_DIR = "libs/ktem/ktem/assets/icons"
-
-
-logout_js = """
-function () {
-    removeFromStorage('google_api_key');
-    window.location.href = "/logout";
-}
-"""
-
-
-def is_conv_name_valid(name):
-    """Check if the conversation name is valid"""
-    errors = []
-    if len(name) == 0:
-        errors.append("Name cannot be empty")
-    elif len(name) > 40:
-        errors.append("Name cannot be longer than 40 characters")
-
-    return "; ".join(errors)
-
 
 class ConversationControl(BasePage):
-    """Manage conversation"""
+    """Manage conversation in Streamlit"""
 
     def __init__(self, app):
         self._app = app
-        self.logout_js = logout_js
         self.on_building_ui()
 
     def on_building_ui(self):
-        with gr.Row():
-            title_text = "Conversations" if not KH_DEMO_MODE else "Kotaemon Papers"
-            gr.Markdown("## {}".format(title_text))
-            self.btn_toggle_dark_mode = gr.Button(
-                value="",
-                icon=f"{ASSETS_DIR}/dark_mode.svg",
-                scale=1,
-                size="sm",
-                elem_classes=["no-background", "body-text-color"],
-                elem_id="toggle-dark-button",
-            )
-            self.btn_chat_expand = gr.Button(
-                value="",
-                icon=f"{ASSETS_DIR}/expand.svg",
-                scale=1,
-                size="sm",
-                elem_classes=["no-background", "body-text-color"],
-                elem_id="chat-expand-button",
-            )
-            self.btn_info_expand = gr.Button(
-                value="",
-                icon=f"{ASSETS_DIR}/expand.svg",
-                min_width=2,
-                scale=1,
-                size="sm",
-                elem_classes=["no-background", "body-text-color"],
-                elem_id="info-expand-button",
-            )
+        """Build UI for conversation management in Streamlit."""
+        
+        with st.sidebar:
+            st.header("Conversations" if not KH_DEMO_MODE else "Kotaemon Papers")
 
-            self.btn_toggle_dark_mode.click(
-                None,
-                js="""
-                () => {
-                    document.body.classList.toggle('dark');
-                }
-                """,
-            )
+            # Dark Mode Toggle (Requires JavaScript)
+            if st.button("Toggle Dark Mode"):
+                st.markdown("<script>document.body.classList.toggle('dark');</script>", unsafe_allow_html=True)
 
-        self.conversation_id = gr.State(value="")
-        self.conversation = gr.Dropdown(
-            label="Chat sessions",
-            choices=[],
-            container=False,
-            filterable=True,
-            interactive=True,
-            elem_classes=["unset-overflow"],
-            elem_id="conversation-dropdown",
-        )
+            # Expand Buttons (Handled via CSS or Custom JS in Streamlit)
+            st.markdown("---")
 
-        with gr.Row() as self._new_delete:
-            self.cb_suggest_chat = gr.Checkbox(
-                value=False,
-                label="Suggest chat",
-                min_width=10,
-                scale=6,
-                elem_id="suggest-chat-checkbox",
-                container=False,
-                visible=not KH_DEMO_MODE,
-            )
-            self.cb_is_public = gr.Checkbox(
-                value=False,
-                label="Share this conversation",
-                elem_id="is-public-checkbox",
-                container=False,
-                visible=not KH_DEMO_MODE and not KH_SSO_ENABLED,
-            )
+            # Conversation Dropdown
+            st.subheader("Chat Sessions")
+            user_id = st.session_state.get("user_id")  # 🔹 Fix: Get user_id from session state
+            if not user_id:
+                st.error("You need to log in to access the chat.")
+                return
+            conversation_list = self.load_chat_history(user_id) 
+            selected_conv = st.selectbox("Select a conversation", conversation_list, index=0 if conversation_list else None)
 
-            if not KH_DEMO_MODE:
-                self.btn_conversation_rn = gr.Button(
-                    value="",
-                    icon=f"{ASSETS_DIR}/rename.svg",
-                    min_width=2,
-                    scale=1,
-                    size="sm",
-                    elem_classes=["no-background", "body-text-color"],
-                )
-                self.btn_del = gr.Button(
-                    value="",
-                    icon=f"{ASSETS_DIR}/delete.svg",
-                    min_width=2,
-                    scale=1,
-                    size="sm",
-                    elem_classes=["no-background", "body-text-color"],
-                )
-                self.btn_new = gr.Button(
-                    value="",
-                    icon=f"{ASSETS_DIR}/new.svg",
-                    min_width=2,
-                    scale=1,
-                    size="sm",
-                    elem_classes=["no-background", "body-text-color"],
-                    elem_id="new-conv-button",
-                )
+            # New/Delete/Rename Buttons
+            col1, col2, col3 = st.columns([1, 1, 1])
+            if KH_DEMO_MODE:
+                if st.button("New Chat", key="new_chat_button"):
+                    self.new_conv(self._app.user_id)
             else:
-                self.btn_new = gr.Button(
-                    value="New chat",
-                    min_width=120,
-                    size="sm",
-                    scale=1,
-                    variant="primary",
-                    elem_id="new-conv-button",
-                    visible=False,
-                )
+                with col1:
+                    if st.button("Rename"):
+                        new_name = st.text_input("Enter new name:", key="rename_input")
+                        if st.button("Save Rename"):
+                            self.rename_conv(selected_conv, new_name, True, self._app.user_id)
+                with col2:
+                    if st.button("Delete", key="delete_button"):
+                        self.delete_conv(selected_conv, self._app.user_id)
+                with col3:
+                    if st.button("New", key="new_button"):
+                        self.new_conv(self._app.user_id)
 
-        if KH_DEMO_MODE:
-            with gr.Row():
-                self.btn_demo_login = gr.Button(
-                    "Sign-in to create new chat",
-                    min_width=120,
-                    size="sm",
-                    scale=1,
-                    variant="primary",
-                )
-                _js_redirect = """
-                () => {
-                    url = '/login' + window.location.search;
-                    window.open(url, '_blank');
-                }
-                """
-                self.btn_demo_login.click(None, js=_js_redirect)
+            # Chat Suggestion & Public Checkbox
+            suggest_chat = st.checkbox("Suggest chat", value=False, key="suggest_chat_checkbox", disabled=KH_DEMO_MODE)
+            share_conv = st.checkbox("Share this conversation", value=False, key="share_checkbox", disabled=KH_DEMO_MODE or KH_SSO_ENABLED)
 
-                self.btn_demo_logout = gr.Button(
-                    "Sign-out",
-                    min_width=120,
-                    size="sm",
-                    scale=1,
-                    visible=False,
-                )
-
-        with gr.Row(visible=False) as self._delete_confirm:
-            self.btn_del_conf = gr.Button(
-                value="Delete",
-                variant="stop",
-                min_width=10,
-            )
-            self.btn_del_cnl = gr.Button(value="Cancel", min_width=10)
-
-        with gr.Row():
-            self.conversation_rn = gr.Text(
-                label="(Enter) to save",
-                placeholder="Conversation name",
-                container=True,
-                scale=5,
-                min_width=10,
-                interactive=True,
-                visible=False,
-            )
+            if KH_DEMO_MODE:
+                st.button("Sign-in to create new chat", key="sign_in_button")
+                st.button("Sign-out", key="sign_out_button", disabled=True)
 
     def load_chat_history(self, user_id):
-        """Reload chat history"""
-
-        # In case user are admin. They can also watch the
-        # public conversations
-        can_see_public: bool = False
+        """Load user's chat history"""
+        can_see_public = False
         with Session(engine) as session:
-            statement = select(User).where(User.id == user_id)
-            result = session.exec(statement).one_or_none()
-
-            if result is not None:
-                if flowsettings.KH_USER_CAN_SEE_PUBLIC:
-                    can_see_public = (
-                        result.username == flowsettings.KH_USER_CAN_SEE_PUBLIC
-                    )
-                else:
-                    can_see_public = True
-
-        print(f"User-id: {user_id}, can see public conversations: {can_see_public}")
+            user = session.exec(select(User).where(User.id == user_id)).one_or_none()
+            if user and flowsettings.KH_USER_CAN_SEE_PUBLIC:
+                can_see_public = user.username == flowsettings.KH_USER_CAN_SEE_PUBLIC
+            else:
+                can_see_public = True
 
         options = []
         with Session(engine) as session:
-            # Define condition based on admin-role:
-            # - can_see: can see their conversations & public files
-            # - can_not_see: only see their conversations
-            if can_see_public:
-                statement = (
-                    select(Conversation)
-                    .where(
-                        or_(
-                            Conversation.user == user_id,
-                            Conversation.is_public,
-                        )
-                    )
-                    .order_by(
-                        Conversation.is_public.desc(), Conversation.date_created.desc()
-                    )  # type: ignore
-                )
-            else:
-                statement = (
-                    select(Conversation)
-                    .where(Conversation.user == user_id)
-                    .order_by(Conversation.date_created.desc())  # type: ignore
-                )
+            statement = select(Conversation).where(
+                or_(Conversation.user == user_id, Conversation.is_public) if can_see_public else (Conversation.user == user_id)
+            ).order_by(Conversation.is_public.desc(), Conversation.date_created.desc())
 
             results = session.exec(statement).all()
             for result in results:
-                options.append((result.name, result.id))
-
+                options.append(result.name)
         return options
 
-    def reload_conv(self, user_id):
-        conv_list = self.load_chat_history(user_id)
-        if conv_list:
-            return gr.update(value=None, choices=conv_list)
-        else:
-            return gr.update(value=None, choices=[])
-
     def new_conv(self, user_id):
-        """Create new chat"""
-        if user_id is None:
-            gr.Warning("Please sign in first (Settings → User Settings)")
-            return None, gr.update()
+        """Create a new conversation"""
+        if not user_id:
+            st.warning("Please sign in first (Settings → User Settings)")
+            return
         with Session(engine) as session:
             new_conv = Conversation(user=user_id)
             session.add(new_conv)
             session.commit()
+        st.success("New conversation created.")
+        st.experimental_rerun()
 
-            id_ = new_conv.id
-
-        history = self.load_chat_history(user_id)
-
-        return id_, gr.update(value=id_, choices=history)
-
-    def delete_conv(self, conversation_id, user_id):
-        """Delete the selected conversation"""
-        if not conversation_id:
-            gr.Warning("No conversation selected.")
-            return None, gr.update()
-
-        if user_id is None:
-            gr.Warning("Please sign in first (Settings → User Settings)")
-            return None, gr.update()
-
+    def delete_conv(self, conversation_name, user_id):
+        """Delete selected conversation"""
+        if not conversation_name:
+            st.warning("No conversation selected.")
+            return
+        if not user_id:
+            st.warning("Please sign in first (Settings → User Settings)")
+            return
         with Session(engine) as session:
-            statement = select(Conversation).where(Conversation.id == conversation_id)
-            result = session.exec(statement).one()
+            conversation = session.exec(select(Conversation).where(Conversation.name == conversation_name)).one_or_none()
+            if conversation:
+                session.delete(conversation)
+                session.commit()
+                st.success("Conversation deleted.")
+                st.experimental_rerun()
 
-            session.delete(result)
-            session.commit()
-
-        history = self.load_chat_history(user_id)
-        if history:
-            id_ = history[0][1]
-            return id_, gr.update(value=id_, choices=history)
-        else:
-            return None, gr.update(value=None, choices=[])
-
-    def select_conv(self, conversation_id, user_id):
-        """Select the conversation"""
-        default_chat_suggestions = [[each] for each in ChatSuggestion.CHAT_SAMPLES]
-
-        with Session(engine) as session:
-            statement = select(Conversation).where(Conversation.id == conversation_id)
-            try:
-                result = session.exec(statement).one()
-                id_ = result.id
-                name = result.name
-                is_conv_public = result.is_public
-
-                # disable file selection ids state if
-                # not the owner of the conversation
-                if user_id == result.user:
-                    selected = result.data_source.get("selected", {})
-                else:
-                    selected = {}
-
-                chats = result.data_source.get("messages", [])
-                chat_suggestions = result.data_source.get(
-                    "chat_suggestions", default_chat_suggestions
-                )
-
-                retrieval_history: list[str] = result.data_source.get(
-                    "retrieval_messages", []
-                )
-                plot_history: list[dict] = result.data_source.get("plot_history", [])
-
-                # On initialization
-                # Ensure len of retrieval and messages are equal
-                retrieval_history = sync_retrieval_n_message(chats, retrieval_history)
-
-                info_panel = (
-                    retrieval_history[-1]
-                    if retrieval_history
-                    else "<h5><b>No evidence found.</b></h5>"
-                )
-                plot_data = plot_history[-1] if plot_history else None
-                state = result.data_source.get("state", STATE)
-
-            except Exception as e:
-                logger.warning(e)
-                id_ = ""
-                name = ""
-                selected = {}
-                chats = []
-                chat_suggestions = default_chat_suggestions
-                retrieval_history = []
-                plot_history = []
-                info_panel = ""
-                plot_data = None
-                state = STATE
-                is_conv_public = False
-
-        indices = []
-        for index in self._app.index_manager.indices:
-            # assume that the index has selector
-            if index.selector is None:
-                continue
-            if isinstance(index.selector, int):
-                indices.append(selected.get(str(index.id), index.default_selector))
-            if isinstance(index.selector, tuple):
-                indices.extend(selected.get(str(index.id), index.default_selector))
-
-        return (
-            id_,
-            id_,
-            name,
-            chats,
-            chat_suggestions,
-            info_panel,
-            plot_data,
-            retrieval_history,
-            plot_history,
-            is_conv_public,
-            state,
-            *indices,
-        )
-
-    def rename_conv(self, conversation_id, new_name, is_renamed, user_id):
-        """Rename the conversation"""
-        if not is_renamed or KH_DEMO_MODE or user_id is None or not conversation_id:
-            return (
-                gr.update(),
-                conversation_id,
-                gr.update(visible=False),
-            )
-
-        errors = is_conv_name_valid(new_name)
+    def rename_conv(self, conversation_name, new_name, is_renamed, user_id):
+        """Rename selected conversation"""
+        if not is_renamed or KH_DEMO_MODE or not user_id or not conversation_name:
+            return
+        errors = self.is_conv_name_valid(new_name)
         if errors:
-            gr.Warning(errors)
-            return (
-                gr.update(),
-                conversation_id,
-                gr.update(visible=False),
-            )
-
-        with Session(engine) as session:
-            statement = select(Conversation).where(Conversation.id == conversation_id)
-            result = session.exec(statement).one()
-            result.name = new_name
-            session.add(result)
-            session.commit()
-
-        history = self.load_chat_history(user_id)
-        gr.Info("Conversation renamed.")
-        return (
-            gr.update(choices=history),
-            conversation_id,
-            gr.update(visible=False),
-        )
-
-    def persist_chat_suggestions(
-        self, conversation_id, new_suggestions, is_updated, user_id
-    ):
-        """Update the conversation's chat suggestions"""
-        if not is_updated:
+            st.warning(errors)
             return
 
-        if user_id is None:
-            gr.Warning("Please sign in first (Settings → User Settings)")
-            return gr.update(), ""
-
-        if not conversation_id:
-            gr.Warning("No conversation selected.")
-            return gr.update(), ""
-
         with Session(engine) as session:
-            statement = select(Conversation).where(Conversation.id == conversation_id)
-            result = session.exec(statement).one()
+            conversation = session.exec(select(Conversation).where(Conversation.name == conversation_name)).one_or_none()
+            if conversation:
+                conversation.name = new_name
+                session.add(conversation)
+                session.commit()
+                st.success("Conversation renamed.")
+                st.rerun()
 
-            data_source = deepcopy(result.data_source)
-            data_source["chat_suggestions"] = [
-                [x] for x in new_suggestions.iloc[:, 0].tolist()
-            ]
+    def is_conv_name_valid(self, name):
+        """Check if conversation name is valid"""
+        errors = []
+        if len(name) == 0:
+            errors.append("Name cannot be empty")
+        elif len(name) > 40:
+            errors.append("Name cannot be longer than 40 characters")
+        return "; ".join(errors)
 
-            result.data_source = data_source
-            session.add(result)
-            session.commit()
+    def select_conv(self, conversation_name, user_id):
+        """Retrieve conversation details when selected"""
+        with Session(engine) as session:
+            conversation = session.exec(select(Conversation).where(Conversation.name == conversation_name)).one_or_none()
+            if not conversation:
+                return None, "", [], [], "", None, [], [], False, STATE, []
 
-        gr.Info("Chat suggestions updated.")
+            selected = conversation.data_source.get("selected", {}) if user_id == conversation.user else {}
+            chats = conversation.data_source.get("messages", [])
+            chat_suggestions = conversation.data_source.get("chat_suggestions", [[each] for each in ChatSuggestion.CHAT_SAMPLES])
+            retrieval_history = conversation.data_source.get("retrieval_messages", [])
+            plot_history = conversation.data_source.get("plot_history", [])
 
-    def toggle_demo_login_visibility(self, user_api_key, request: gr.Request):
-        try:
-            import gradiologin as grlogin
+            retrieval_history = sync_retrieval_n_message(chats, retrieval_history)
+            info_panel = retrieval_history[-1] if retrieval_history else "<h5><b>No evidence found.</b></h5>"
+            plot_data = plot_history[-1] if plot_history else None
 
-            user = grlogin.get_user(request)
-        except (ImportError, AssertionError):
-            user = None
-
-        if user:  # or user_api_key:
-            return [
-                gr.update(visible=True),
-                gr.update(visible=True),
-                gr.update(visible=True),
-                gr.update(visible=False),
-            ]
-        else:
-            return [
-                gr.update(visible=False),
-                gr.update(visible=False),
-                gr.update(visible=False),
-                gr.update(visible=True),
-            ]
-
-    def _on_app_created(self):
-        """Reload the conversation once the app is created"""
-        self._app.app.load(
-            self.reload_conv,
-            inputs=[self._app.user_id],
-            outputs=[self.conversation],
-        )
+            return (
+                conversation.id, conversation.name, chats, chat_suggestions, info_panel, plot_data, retrieval_history,
+                plot_history, conversation.is_public, STATE, selected
+            )

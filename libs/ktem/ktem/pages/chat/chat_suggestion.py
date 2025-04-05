@@ -1,4 +1,4 @@
-import gradio as gr
+import streamlit as st
 from ktem.app import BasePage
 from theflow.settings import settings as flowsettings
 
@@ -8,7 +8,7 @@ class ChatSuggestion(BasePage):
         flowsettings,
         "KH_FEATURE_CHAT_SUGGESTION_SAMPLES",
         [
-            "Summary this document",
+            "Summarize this document",
             "Generate a FAQ for this document",
             "Identify the main highlights in bullet points",
         ],
@@ -19,24 +19,18 @@ class ChatSuggestion(BasePage):
         self.on_building_ui()
 
     def on_building_ui(self):
-        self.chat_samples = [[each] for each in self.CHAT_SAMPLES]
-        with gr.Accordion(
-            label="Chat Suggestion",
-            visible=getattr(flowsettings, "KH_FEATURE_CHAT_SUGGESTION", False),
-        ) as self.accordion:
-            self.default_example = gr.State(
-                value=self.chat_samples,
-            )
-            self.examples = gr.DataFrame(
-                value=self.chat_samples,
-                headers=["Next Question"],
-                interactive=False,
-                elem_id="chat-suggestion",
-                wrap=True,
-            )
+        st.session_state.setdefault("chat_samples", self.CHAT_SAMPLES)
 
-    def as_gradio_component(self):
-        return self.examples
+        if getattr(flowsettings, "KH_FEATURE_CHAT_SUGGESTION", False):
+            with st.expander("Chat Suggestion", expanded=True):
+                self.show_suggestions()
 
-    def select_example(self, ev: gr.SelectData):
-        return {"text": ev.value}
+    def show_suggestions(self):
+        st.markdown("### Suggested Questions")
+        for sample in self.CHAT_SAMPLES:
+            if st.button(sample):
+                st.session_state["selected_example"] = sample
+                st.toast(f"Selected: {sample}")
+
+    def get_selected_example(self):
+        return st.session_state.get("selected_example", "")

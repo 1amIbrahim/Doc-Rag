@@ -1,132 +1,50 @@
+import streamlit as st
 import hashlib
-
-import gradio as gr
-from ktem.app import BasePage
 from ktem.db.models import User, engine
-from ktem.pages.resources.user import create_user
 from sqlmodel import Session, select
 
-fetch_creds = """
-function() {
-    const username = getStorage('username', '')
-    const password = getStorage('password', '')
-    return [username, password, null];
-}
-"""
 
-signin_js = """
-function(usn, pwd) {
-    setStorage('username', usn);
-    setStorage('password', pwd);
-    return [usn, pwd];
-}
-"""
-
-
-class LoginPage(BasePage):
-
-    public_events = ["onSignIn"]
+class LoginPage:
+    """Handles user authentication in the Streamlit app"""
 
     def __init__(self, app):
-        self._app = app
-        self.on_building_ui()
+        self._app = app  # Reference to the main app
 
-    def on_building_ui(self):
-        gr.Markdown(f"# Welcome to {self._app.app_name}!")
-        self.usn = gr.Textbox(label="Username", visible=False)
-        self.pwd = gr.Textbox(label="Password", type="password", visible=False)
-        self.btn_login = gr.Button("Login", visible=False)
+    def render(self):
+        """Render the login page UI"""
+        st.subheader("Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
 
-    def on_register_events(self):
-        onSignIn = gr.on(
-            triggers=[self.btn_login.click, self.pwd.submit],
-            fn=self.login,
-            inputs=[self.usn, self.pwd],
-            outputs=[self._app.user_id, self.usn, self.pwd],
-            show_progress="hidden",
-            js=signin_js,
-        ).then(
-            self.toggle_login_visibility,
-            inputs=[self._app.user_id],
-            outputs=[self.usn, self.pwd, self.btn_login],
-        )
-        for event in self._app.get_event("onSignIn"):
-            onSignIn = onSignIn.success(**event)
+        if st.button("Login"):
+            self.login(username, password)
 
-    def toggle_login_visibility(self, user_id):
-        return (
-            gr.update(visible=user_id is None),
-            gr.update(visible=user_id is None),
-            gr.update(visible=user_id is None),
-        )
+    def login(self, username, password):
+        """Authenticate user and set session state"""
+        if not username or not password:
+            st.error("Username and password are required.")
+            return
 
-    def _on_app_created(self):
-        onSignIn = self._app.app.load(
-            self.login,
-            inputs=[self.usn, self.pwd],
-            outputs=[self._app.user_id, self.usn, self.pwd],
-            show_progress="hidden",
-            js=fetch_creds,
-        ).then(
-            self.toggle_login_visibility,
-            inputs=[self._app.user_id],
-            outputs=[self.usn, self.pwd, self.btn_login],
-        )
-        for event in self._app.get_event("onSignIn"):
-            onSignIn = onSignIn.success(**event)
+        hashed_password = hashlib.sha256(password.encode()).hexdigest()
 
-    def on_subscribe_public_events(self):
-        self._app.subscribe_event(
-            name="onSignOut",
-            definition={
-                "fn": self.toggle_login_visibility,
-                "inputs": [self._app.user_id],
-                "outputs": [self.usn, self.pwd, self.btn_login],
-                "show_progress": "hidden",
-            },
-        )
+        with Session(engine) as session:
+            stmt = select(User).where(
+                User.username_lower == username.lower().strip(),
+                User.password == hashed_password,
+            )
+            user = session.exec(stmt).first()
 
-    def login(self, usn, pwd, request: gr.Request):
-        try:
-            import gradiologin as grlogin
-
-            user = grlogin.get_user(request)
-        except (ImportError, AssertionError):
-            user = None
-
-        if user:
-            user_id = user["sub"]
-            with Session(engine) as session:
-                stmt = select(User).where(
-                    User.id == user_id,
-                )
-                result = session.exec(stmt).all()
-
-            if result:
-                print("Existing user:", user)
-                return user_id, "", ""
+            if user:
+                st.session_state["user_id"] = user.id
+                st.session_state["is_admin"] = user.admin
+                st.success(f"Logged in as {'Admin' if user.admin else 'User'}: {username}")
+                st.rerun()  # 🔹 Fix: Refresh UI after login
             else:
-                print("Creating new user:", user)
-                create_user(
-                    usn=user["email"],
-                    pwd="",
-                    user_id=user_id,
-                    is_admin=False,
-                )
-                return user_id, "", ""
-        else:
-            if not usn or not pwd:
-                return None, usn, pwd
+                st.error("Invalid username or password")
 
-            hashed_password = hashlib.sha256(pwd.encode()).hexdigest()
-            with Session(engine) as session:
-                stmt = select(User).where(
-                    User.username_lower == usn.lower().strip(),
-                    User.password == hashed_password,
-                )
-                result = session.exec(stmt).all()
-                if result:
-                    return result[0].id, "", ""
-
-                gr.Warning("Invalid username or password")
-                return None, usn, pwd
+    def logout(self):
+        """Logs out the user"""
+        st.session_state["user_id"] = None
+        st.session_state["is_admin"] = False
+        st.success("Logged out")
+        st.rerun()  # 🔹 Fix: Refresh UI after logout
