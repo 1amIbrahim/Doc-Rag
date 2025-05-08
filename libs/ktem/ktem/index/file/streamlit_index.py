@@ -266,9 +266,9 @@ class FileIndex(BaseIndex):
             )
             return
 
-        from .ui import FileSelector
+        from .streamlit_ui import FileSelectorUI
 
-        self._selector_ui_cls = FileSelector
+        self._selector_ui_cls = FileSelectorUI
 
     def _setup_file_index_ui_cls(self):
         """Retrieve the Index UI class
@@ -301,9 +301,9 @@ class FileIndex(BaseIndex):
             )
             return
 
-        from .ui import FileIndexPage
+        from .streamlit_ui import FileIndexUI
 
-        self._index_ui_cls = FileIndexPage
+        self._index_ui_cls = FileIndexUI
 
     def on_create(self):
         """Create the index for the first time
@@ -358,7 +358,7 @@ class FileIndex(BaseIndex):
 
     def get_index_page_ui(self):
         if self._index_ui is None:
-            self._index_ui = self._index_ui_cls(self._app,self)
+            self._index_ui = self._index_ui_cls(self)
         return self._index_ui
 
     def get_user_settings(self):

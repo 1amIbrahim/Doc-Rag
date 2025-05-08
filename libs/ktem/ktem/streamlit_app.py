@@ -28,13 +28,13 @@ class StreamlitBaseApp:
 
         self.default_settings.reasoning.finalize()
         self.default_settings.index.finalize()
-
         
-        st.session_state.user_id = "default" if not self.f_user_management else None
+        st.session_state.user_id = "default"
         
         st.session_state.settings = self.default_settings.flatten()
         self.setting_state = st.session_state.settings
         self.user_id =st.session_state.user_id 
+        print(st.session_state.user_id)
         
     def _load_assets(self):
         dir_assets = Path(__file__).parent / "assets"
@@ -79,6 +79,93 @@ class StreamlitBaseApp:
         raise NotImplementedError("Subclasses should implement the UI.")
 
     def run(self):
-        st.set_page_config(page_title=self.app_name, page_icon=self._favicon)
+        st.set_page_config(page_title=self.app_name, page_icon=self._favicon,layout='wide')
         self.inject_assets()
         self.ui()
+
+import streamlit as st
+from typing import Optional, List, Union
+from abc import ABC, abstractmethod
+
+class BasePage(ABC):
+    """The logic of the Streamlit app (adapted from Kotaemon)"""
+    
+    public_events: List[str] = []
+    
+    def __init__(self, app):
+        self._app = app
+        self._initialized = False
+    
+    @abstractmethod
+    def on_building_ui(self):
+        """Build the UI of the app"""
+        pass
+    
+    @abstractmethod
+    def on_subscribe_public_events(self):
+        """Subscribe to the declared public event of the app"""
+        pass
+    
+    @abstractmethod
+    def on_register_events(self):
+        """Register all events to the app"""
+        pass
+    
+    def _on_app_created(self):
+        """Called when the app is created"""
+        pass
+    
+    def as_streamlit_component(self) -> Optional[Union[st.delta_generator.DeltaGenerator, 
+                                                    List[st.delta_generator.DeltaGenerator]]]:
+        """Return the Streamlit components responsible for events"""
+        return None
+    
+    def render(self):
+        """Render all components in the page"""
+        if not self._initialized:
+            self.on_building_ui()
+            self._initialized = True
+            
+        # In Streamlit, rendering happens automatically when components are created
+        # This method serves as a placeholder for the original functionality
+        for value in self.__dict__.values():
+            if isinstance(value, BasePage):
+                value.render()
+    
+    def unrender(self):
+        """Streamlit doesn't have an exact equivalent of unrender"""
+        # In Streamlit, we can clear components by controlling what gets rendered
+        # This would be handled by conditional rendering in the main app
+        for value in self.__dict__.values():
+            if isinstance(value, BasePage):
+                value.unrender()
+    
+    def declare_public_events(self):
+        """Declare an event for the app"""
+        for event in self.public_events:
+            self._app.declare_event(event)
+
+        for value in self.__dict__.values():
+            if isinstance(value, BasePage):
+                value.declare_public_events()
+    
+    def subscribe_public_events(self):
+        """Subscribe to an event"""
+        self.on_subscribe_public_events()
+        for value in self.__dict__.values():
+            if isinstance(value, BasePage):
+                value.subscribe_public_events()
+    
+    def register_events(self):
+        """Register all events"""
+        self.on_register_events()
+        for value in self.__dict__.values():
+            if isinstance(value, BasePage):
+                value.register_events()
+    
+    def on_app_created(self):
+        """Execute on app created callbacks"""
+        self._on_app_created()
+        for value in self.__dict__.values():
+            if isinstance(value, BasePage):
+                value.on_app_created()

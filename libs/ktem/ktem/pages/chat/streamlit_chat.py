@@ -1,11 +1,12 @@
 import streamlit as st
 #from ktem.utils import extract_file_urls, parse_chat_command
-
-class ChatPageStreamlit:
+from ktem.streamlit_app import BasePage
+class ChatPageStreamlit():
     def __init__(self, app):
         self.app = app
 
-    def render(self):
+    def on_building_ui(self):
+        print("Chat page")
         st.title("Kotaemon Chat")
 
         if "chat_history" not in st.session_state:

@@ -145,7 +145,7 @@ class IndexManager:
         self._index_types = {}
 
         # built-in index types
-        from .file.index import FileIndex
+        from .file.streamlit_index import FileIndex
 
         for index in [FileIndex]:
             self._index_types[f"{index.__module__}.{index.__qualname__}"] = index
