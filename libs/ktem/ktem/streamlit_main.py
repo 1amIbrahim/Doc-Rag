@@ -2,7 +2,7 @@ import streamlit as st
 from decouple import config
 from ktem.streamlit_app import StreamlitBaseApp
 from ktem.pages.chat.streamlit_chat import ChatPageStreamlit
-from ktem.pages.help import HelpPage
+from ktem.pages.help_st import HelpPage
 from ktem.pages.resources import ResourcesTab
 from ktem.pages.streamlit_settings import SettingsPageStreamlit
 from ktem.pages.setup import SetupPage
@@ -61,14 +61,14 @@ class App(StreamlitBaseApp):
 
         tabs.append("Help")
         tab_map["Help"] = HelpPage(self)
-
         selected_tab = st.sidebar.radio("Navigation", tabs)
 
         if selected_tab == "Files" and isinstance(tab_map[selected_tab], dict):
             subtab_names = list(tab_map[selected_tab].keys())
             selected_subtab = st.selectbox("Choose Index", subtab_names, key="selected_sub_index")
             tab_map[selected_tab][selected_subtab].render()
-
+        else:
+            tab_map[selected_tab].render()
 
     def on_subscribe_public_events(self):
         if self.f_user_management:

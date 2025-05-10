@@ -18,7 +18,5 @@ if GRADIO_TEMP_DIR is None:
 
 # INIT APP
 app = App()
-
-
 app.run()
 
