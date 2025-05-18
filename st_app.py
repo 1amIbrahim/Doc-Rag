@@ -1,6 +1,7 @@
 import sys
 import os
-
+os.environ["LLAMA_INDEX_CACHE_DIR"] = "/tmp/llama_index_cache"
+os.environ["NLTK_DATA"] = "/tmp/nltk_data"
 # Add libs to Python path
 sys.path.insert(0, os.path.abspath("libs"))
 import streamlit as st
