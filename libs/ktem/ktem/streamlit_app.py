@@ -3,14 +3,14 @@ from pathlib import Path
 
 import streamlit as st
 from ktem.assets import PDFJS_PREBUILT_DIR
-from ktem.index import IndexManager
+from libs.ktem.ktem.index.manager import IndexManager
 from ktem.settings import BaseSettingGroup, SettingGroup, SettingReasoningGroup
 from theflow.settings import settings
 from theflow.utils.modules import import_dotted_string
 
 
 class StreamlitBaseApp:
-    def __init__(self):
+    def __init__(self, app=None):
         self.dev_mode = getattr(settings, "KH_MODE", "") == "dev"
         self.app_name = getattr(settings, "KH_APP_NAME", "Kotaemon")
         self.app_version = getattr(settings, "KH_APP_VERSION", "")
@@ -51,11 +51,11 @@ class StreamlitBaseApp:
 
     def initialize_indices(self):
         self.index_manager = IndexManager(self)
-        self.index_manager.on_application_startup()
+        #self.index_manager.on_application_startup()
 
-        for index in self.index_manager.indices:
-            options = index.get_user_settings()
-            self.default_settings.index.options[index.id] = BaseSettingGroup(settings=options)
+        # for index in self.index_manager.indices:
+        #     options = index.get_user_settings()
+        #     self.default_settings.index.options[index.id] = BaseSettingGroup(settings=options)
 
     def register_reasonings(self):
         if getattr(settings, "KH_REASONINGS", None) is None:

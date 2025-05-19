@@ -3,9 +3,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from ktem.app import BasePage
+    from ktem.streamlit_app import StreamlitBaseApp
 
-    from kotaemon.base import BaseComponent
+    from libs.kotaemon.kotaemon.base import BaseComponent
 
 
 logger = logging.getLogger(__name__)
@@ -74,11 +74,11 @@ class BaseIndex(abc.ABC):
             config (dict): the config of the index
         """
 
-    def get_selector_component_ui(self) -> Optional["BasePage"]:
+    def get_selector_component_ui(self) -> Optional["StreamlitBaseApp"]:
         """The UI component to select the entities in the Chat page"""
         return None
 
-    def get_index_page_ui(self) -> Optional["BasePage"]:
+    def get_index_page_ui(self) -> Optional["StreamlitBaseApp"]:
         """The index page UI to manage the entities"""
         return None
 

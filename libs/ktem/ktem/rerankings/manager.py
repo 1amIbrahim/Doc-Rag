@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from theflow.settings import settings as flowsettings
 from theflow.utils.modules import deserialize
 
-from kotaemon.rerankings.base import BaseReranking
+from libs.kotaemon.kotaemon.rerankings.base import BaseReranking
 
 from .db import RerankingTable, engine
 
@@ -52,7 +52,7 @@ class RerankingManager:
                     self._default = item.name
 
     def load_vendors(self):
-        from kotaemon.rerankings import (
+        from libs.kotaemon.kotaemon.rerankings import (
             CohereReranking,
             TeiFastReranking,
             VoyageAIReranking,

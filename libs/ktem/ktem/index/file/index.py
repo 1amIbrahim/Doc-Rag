@@ -4,7 +4,7 @@ from typing import Any, Optional, Type
 
 from ktem.components import filestorage_path, get_docstore, get_vectorstore
 from ktem.db.engine import engine
-from ktem.index.base import BaseIndex
+from libs.ktem.ktem.index.base import BaseIndex
 from sqlalchemy import JSON, Column, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.mutable import MutableDict
@@ -12,7 +12,7 @@ from theflow.settings import settings as flowsettings
 from theflow.utils.modules import import_dotted_string
 from tzlocal import get_localzone
 
-from kotaemon.storages import BaseDocumentStore, BaseVectorStore
+from libs.kotaemon.kotaemon.storages import BaseDocumentStore, BaseVectorStore
 
 from .base import BaseFileIndexIndexing, BaseFileIndexRetriever
 

@@ -1,12 +1,31 @@
 import sys
 import os
+
+import warnings
+
+# Suppress non-critical warnings
+warnings.filterwarnings("ignore", message="Could not download mistral tokenizer")
+warnings.filterwarnings("ignore", message="GraphRAG dependencies not installed")
+warnings.filterwarnings("ignore", message="Nano-GraphRAG dependencies not installed")
+
+# Add libs and current directory to Python path
+=======
 os.environ["LLAMA_INDEX_CACHE_DIR"] = "/tmp/llama_index_cache"
 os.environ["NLTK_DATA"] = "/tmp/nltk_data"
 # Add libs to Python path
+
 sys.path.insert(0, os.path.abspath("libs"))
+sys.path.insert(0, os.path.abspath("."))
+
 import streamlit as st
 from theflow.settings import settings as flowsettings
-from ktem.streamlit_main import App
+from libs.ktem.ktem.streamlit_main import App
+
+try:
+    import graphrag
+    import nano_graphrag
+except ImportError:
+    pass  # Silently ignore if these are optional
 
 # ENV SETUP
 KH_APP_DATA_DIR = getattr(flowsettings, "KH_APP_DATA_DIR", ".")
@@ -17,7 +36,8 @@ if GRADIO_TEMP_DIR is None:
     GRADIO_TEMP_DIR = os.path.join(KH_APP_DATA_DIR, "gradio_tmp")
     os.environ["GRADIO_TEMP_DIR"] = GRADIO_TEMP_DIR
 
-# INIT APP
+# Initialize app without any Streamlit commands first
 app = App()
+
 app.run()
 
