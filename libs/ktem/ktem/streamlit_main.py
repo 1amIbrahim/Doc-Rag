@@ -4,16 +4,18 @@ from ktem.streamlit_app import StreamlitBaseApp
 from ktem.pages.chat.streamlit_chat import ChatPageStreamlit
 from ktem.pages.help import HelpPage
 from ktem.pages.resources import ResourcesTab
-from ktem.pages.streamlit_settings import SettingsPageStreamlit
+from ktem.pages.streamlit_settings import SettingsPage
 from ktem.pages.setup import SetupPage
+from ktem.pages.login import LoginPage
 from theflow.settings import settings as flowsettings
 
+# Feature flags
 KH_DEMO_MODE = getattr(flowsettings, "KH_DEMO_MODE", False)
 KH_SSO_ENABLED = getattr(flowsettings, "KH_SSO_ENABLED", False)
 KH_ENABLE_FIRST_SETUP = getattr(flowsettings, "KH_ENABLE_FIRST_SETUP", False)
 KH_APP_DATA_EXISTS = getattr(flowsettings, "KH_APP_DATA_EXISTS", True)
 
-# override first setup setting
+# Override via .env
 if config("KH_FIRST_SETUP", default=False, cast=bool):
     KH_APP_DATA_EXISTS = False
 
@@ -24,51 +26,45 @@ def should_show_first_setup():
 
 class App(StreamlitBaseApp):
     def ui(self):
-        """Render the UI"""
+        print("...................HELLO THIS UI IS RUNNING..............")
         self._tabs = {}
 
-        # Handle first setup
+        # Step 1: First-time setup
         if KH_ENABLE_FIRST_SETUP and should_show_first_setup():
             st.session_state.show_tabs = False
             SetupPage(self).render()
             return
 
-        st.session_state.show_tabs = True
+        # Step 2: Define all tabs
+        tabs = ["Welcome", "Chat", "Resources", "Settings", "Help"]
+        tab_map = {
+            "Welcome": LoginPage(self),
+            "Chat": ChatPageStreamlit(self),
+            "Resources": ResourcesTab(self),
+            "Settings": SettingsPage(self),
+            "Help": HelpPage(self),
+        }
 
-        tabs = ["Chat"]
-        tab_map = {"Chat": ChatPageStreamlit(self)}
-
-        if self.f_user_management:
-            from ktem.pages.login import LoginPage
-            tabs.insert(0, "Welcome")
-            tab_map["Welcome"] = LoginPage(self)
-
-        if not self.f_user_management and not KH_DEMO_MODE:
-            if len(self.index_manager.indices) == 1:
-                index = self.index_manager.indices[0]
-                tabs.append(index.name)
-                tab_map[index.name] = index.get_index_page_ui()
-            elif len(self.index_manager.indices) > 1:
-                tabs.append("Files")
-                tab_map["Files"] = {i.name: i.get_index_page_ui() for i in self.index_manager.indices}
-
-        if not KH_DEMO_MODE:
-            if not KH_SSO_ENABLED:
-                tabs.append("Resources")
-                tab_map["Resources"] = ResourcesTab(self)
-            tabs.append("Settings")
-            tab_map["Settings"] = SettingsPageStreamlit(self)
-
-        tabs.append("Help")
-        tab_map["Help"] = HelpPage(self)
-
+        # Step 3: Sidebar Navigation
         selected_tab = st.sidebar.radio("Navigation", tabs)
 
+        # Step 4: Login control
+        if self.f_user_management and not self.user_id:
+            if selected_tab != "Welcome":
+                st.warning("⚠️ Please log in to access this page.")
+                return
+            else:
+                # If on Welcome tab and not logged in
+                tab_map["Welcome"].render()
+                return
+
+        # Step 5: Render only selected tab (no overlap)
         if selected_tab == "Files" and isinstance(tab_map[selected_tab], dict):
             subtab_names = list(tab_map[selected_tab].keys())
             selected_subtab = st.selectbox("Choose Index", subtab_names, key="selected_sub_index")
             tab_map[selected_tab][selected_subtab].render()
-
+        else:
+            tab_map[selected_tab].render()
 
     def on_subscribe_public_events(self):
         if self.f_user_management:
@@ -101,7 +97,4 @@ class App(StreamlitBaseApp):
 
     def _on_app_created(self):
         if KH_ENABLE_FIRST_SETUP:
-            if should_show_first_setup():
-                st.session_state.show_tabs = False
-            else:
-                st.session_state.show_tabs = True
+            st.session_state.show_tabs = not should_show_first_setup()
