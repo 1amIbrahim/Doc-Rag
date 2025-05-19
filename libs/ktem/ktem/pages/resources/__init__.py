@@ -1,64 +1,67 @@
-import gradio as gr
-from ktem.app import BasePage
+import streamlit as st
+from ktem.streamlit_app import StreamlitBaseApp
 from ktem.db.models import User, engine
-from ktem.embeddings.ui import EmbeddingManagement
-from ktem.index.ui import IndexManagement
-from ktem.llms.ui import LLMManagement
-from ktem.rerankings.ui import RerankingManagement
+from ktem.embeddings.ui_st import EmbeddingManagement
+from libs.ktem.ktem.index.ui_st import IndexManagement
+from ktem.llms.ui_st import LLMManagement
+from ktem.rerankings.ui_st import RerankingManagement
 from sqlmodel import Session, select
 
-from .user import UserManagement
+from .user_st import UserManagement
 
 
-class ResourcesTab(BasePage):
+class ResourcesTab(StreamlitBaseApp):
     def __init__(self, app):
+        super().__init__(app)
         self._app = app
-        self.on_building_ui()
+        
+    def render(self):
+        """Render the Resources tab UI"""
 
-    def on_building_ui(self):
-        with gr.Tab("Index Collections") as self.index_management_tab:
+        # Create tabs
+        tab_titles = [
+            "Index Collections",
+            "LLMs",
+            "Embeddings",
+            "Rerankings",
+        ]
+        if self._app.f_user_management:
+            tab_titles.append("Users")
+
+        tabs = st.tabs(tab_titles)
+
+        # Index Collections tab
+        with tabs[0]:
             self.index_management = IndexManagement(self._app)
 
-        with gr.Tab("LLMs") as self.llm_management_tab:
-            self.llm_management = LLMManagement(self._app)
+        # LLMs tab
+        with tabs[1]:
+            self.llm_management = LLMManagement()
 
-        with gr.Tab("Embeddings") as self.emb_management_tab:
+        # Embeddings tab
+        with tabs[2]:
             self.emb_management = EmbeddingManagement(self._app)
 
-        with gr.Tab("Rerankings") as self.rerank_management_tab:
-            self.rerank_management = RerankingManagement(self._app)
+        # Rerankings tab
+        with tabs[3]:
+            self.rerank_management = RerankingManagement()
 
+        # Users tab (only if user management is enabled)
         if self._app.f_user_management:
-            with gr.Tab("Users", visible=False) as self.user_management_tab:
+            with tabs[4]:
+                if not self._check_admin_status():
+                    st.warning("You don't have permission to access this section")
+                    st.stop()
                 self.user_management = UserManagement(self._app)
 
-    def on_subscribe_public_events(self):
-        if self._app.f_user_management:
-            self._app.subscribe_event(
-                name="onSignIn",
-                definition={
-                    "fn": self.toggle_user_management,
-                    "inputs": [self._app.user_id],
-                    "outputs": [self.user_management_tab],
-                    "show_progress": "hidden",
-                },
-            )
+    def _check_admin_status(self):
+        """Check if current user is admin"""
+        if not hasattr(self._app, 'user_id') or not self._app.user_id:
+            return False
 
-            self._app.subscribe_event(
-                name="onSignOut",
-                definition={
-                    "fn": self.toggle_user_management,
-                    "inputs": [self._app.user_id],
-                    "outputs": [self.user_management_tab],
-                    "show_progress": "hidden",
-                },
-            )
-
-    def toggle_user_management(self, user_id):
-        """Show/hide the user management, depending on the user's role"""
         with Session(engine) as session:
-            user = session.exec(select(User).where(User.id == user_id)).first()
-            if user and user.admin:
-                return gr.update(visible=True)
+            user = session.exec(
+                select(User).where(User.id == self._app.user_id)
+            ).first()
 
-            return gr.update(visible=False)
+        return user and user.admin
