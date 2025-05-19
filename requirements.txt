@@ -92,8 +92,8 @@ jsonpointer==3.0.0
 jsonschema==4.23.0
 jsonschema-specifications==2024.10.1
 kiwisolver==1.4.8
--e git+https://github.com/1amIbrahim/Doc-Rag.git@7807c1f03eb7aeeb9738c79d97c3ab64273f25b6#egg=kotaemon&subdirectory=libs/kotaemon
--e git+https://github.com/1amIbrahim/Doc-Rag.git@7807c1f03eb7aeeb9738c79d97c3ab64273f25b6#egg=ktem&subdirectory=libs/ktem
+-e git+https://github.com/1amIbrahim/Doc-Rag.git@61ca2e05b70fa066cc299c7d38bc7a00ba77e336#egg=kotaemon&subdirectory=libs/kotaemon
+-e git+https://github.com/1amIbrahim/Doc-Rag.git@61ca2e05b70fa066cc299c7d38bc7a00ba77e336#egg=ktem&subdirectory=libs/ktem
 kubernetes==32.0.1
 lancedb==0.21.2
 langchain==0.2.15
