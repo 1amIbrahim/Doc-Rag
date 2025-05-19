@@ -1,5 +1,6 @@
 import sys
 import os
+
 import warnings
 
 # Suppress non-critical warnings
@@ -8,6 +9,11 @@ warnings.filterwarnings("ignore", message="GraphRAG dependencies not installed")
 warnings.filterwarnings("ignore", message="Nano-GraphRAG dependencies not installed")
 
 # Add libs and current directory to Python path
+=======
+os.environ["LLAMA_INDEX_CACHE_DIR"] = "/tmp/llama_index_cache"
+os.environ["NLTK_DATA"] = "/tmp/nltk_data"
+# Add libs to Python path
+
 sys.path.insert(0, os.path.abspath("libs"))
 sys.path.insert(0, os.path.abspath("."))
 
@@ -33,5 +39,5 @@ if GRADIO_TEMP_DIR is None:
 # Initialize app without any Streamlit commands first
 app = App()
 
-# Then run the app
 app.run()
+
